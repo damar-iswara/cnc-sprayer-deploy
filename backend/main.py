@@ -1,0 +1,101 @@
+import asyncio
+import serial.tools.list_ports
+
+# FastAPI: Handling komunikasi ke python, WebSocket: Untuk komunikasi real-time
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect 
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Module Lokal
+from backend import machine as mcn
+from backend import connection as con
+from backend.machine import JogRequest, SetCalibration, SetStartingPoint, ToStartingPoint, ConnectRequest, SetConstraints
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+@app.get("/")
+def root():
+    return FileResponse("frontend/index.html")
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            await ws.send_json(mcn.get_status())
+            await ws.send_json(mcn.get_constraints())
+            await asyncio.sleep(0.2)
+    except WebSocketDisconnect:
+        print("Client disconnected from WebSocket")
+
+
+@app.get("/status")
+def status():
+    return mcn.get_status()
+
+@app.post("/connect")
+def connect_machine(data: ConnectRequest):
+    ok, msg = con.connect(data.port, data.baudrate)
+    
+    mcn.set_starting_point(0, 0, 0)
+
+    status = mcn.get_status()
+    status["connected"] = con.is_connected()
+    status["lastMessage"] = msg
+    return {
+        "success": ok,
+        "message": msg,
+        "status": status,
+    }
+
+@app.post("/disconnect")
+def disconnect_machine():
+    ok, msg = con.disconnect()
+    status = mcn.get_status()
+    status["connected"] = con.is_connected()
+    status["lastMessage"] = msg
+    return {
+        "success": ok,
+        "message": msg,
+        "status": status,
+    }
+
+@app.get("/ports")
+def list_ports():
+    ports = serial.tools.list_ports.comports()
+    return [
+        {"device": p.device, "description": p.description}
+        for p in ports
+    ]
+
+@app.post("/jog")
+def jog(data: JogRequest):
+    print("JOG REQUEST:", data)
+    return mcn.jog_machine(data.direction, data.step, data.feed)
+
+@app.post("/calibration")
+def calibration(data: SetCalibration):
+    print("CALIBRATION REQUEST:", data)
+    return mcn.set_calibration(data.cx, data.cy, data.cz, data.feed)
+
+@app.post("/set-starting-point")
+def setStartingPoint(data: SetStartingPoint):
+    print("SET START REQUEST:", data)
+    return mcn.set_starting_point(data.zx, data.zy, data.zz)
+
+@app.post("/to-starting-point")
+def toStartingPoint(data: ToStartingPoint):
+    print("TO START REQUEST:", data)
+    return mcn.to_starting_point(data.to_x, data.to_y, data.to_z, data.feed)
