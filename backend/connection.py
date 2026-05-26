@@ -19,9 +19,15 @@ def connect(port_name=PORT, baudrate=BAUDRATE):
             return True, f"Sudah terkoneksi ke {serial_port.port}"
 
         serial_port = serial.Serial(port_name, baudrate, timeout=1)
+        
+        # bangunin GRBL
+        serial_port.write(b"\r\n\r\n")
         time.sleep(2)
-        serial_port.write(b"\n\n")
         serial_port.reset_input_buffer()
+
+        # unlock alarm
+        serial_port.write(b"$X\n")
+        time.sleep(1)
 
         return True, f"Berhasil connect ke {port_name}"
     except Exception as e:
@@ -80,7 +86,7 @@ def send_command(cmd: str):
 # =================== MOVEMENT COMMANDS ===================
 
 def jog_move(axis: str, target: float, feed: float):
-    cmd = f"G90 {axis}{target} F{feed}"
+    cmd = f"G0 {axis}{target} F{feed}"
     return send_command(cmd)
 
 def calib_move(cx, cy, cz, feed):
@@ -98,19 +104,18 @@ def go_to_zero(to_x, to_y, to_z, feed):
 def set_absolute_position():
     home_cmd = "G90"
     return send_command(home_cmd)
-
+    
 def emergency_stop():
     global serial_port
-    if not is_connected():
-        return False, "Serial port tidak terkoneksi"
-    try:
-        serial_port.write(b"!")
-        time.sleep(0.1)
-        serial_port.write(b"\x18")
-        serial_port.reset_input_buffer()
-        return True, "Emergency Stop sent"
-    except Exception as e:
-        return False, f"Gagal Emergency Stop:{e}"
+
+    serial_port.write(b"\x18")
+    print("Emergency stop sent, waiting for machine to halt...")
+    time.sleep(1)
+
+    serial_port.reset_input_buffer()
+
+    print("Resetting machine state...")
+    return send_command("$X")
 
 # =================== PAUSE-RESUME COMMANDS ===================
 

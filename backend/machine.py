@@ -3,6 +3,7 @@ import asyncio
 from pydantic import BaseModel
 from . import connection as con
 
+
 # =================== DATA MODELS ===================
 class JogRequest(BaseModel):
     direction: str
@@ -36,57 +37,76 @@ class SprayingRequest(BaseModel):
     step_over: float
     feed_rate: float
 
+
 # =================== DATA MANAGEMENT ===================
 
-current_status = {
-    "mPos": [0.0, 0.0, 0.0],
-    "feed": 0,
-    "lastReport": "-",
+currentStatus = {
+    "position":    [0.00, 0.00, 50.00],  # [x, y, z]
+    "pausedAtPos": [0.0, 0.0, 0.0],
+    "isSpraying":  False,
+    "isPaused":    False,
+    "connected":   False,
+    "startPoint":  False,
+    "constraints": False,
+    "feed":        1000,
+    "progress":    0,
+    "lastReport":  "-",
     "lastMessage": "GRBL ready",
-    "connected": False,
-    "progress" : 0.0,
-    "is_spraying": False,
-    "is_paused": False,
-    "paused_at_pos": [0.0, 0.0, 0.0]
+    "emergency_stop": False
+}
+
+sprayState = {
+    "isActive": False,
+    "isPaused": False,
+    "progress": 0,
+    "path":     [],
+    "seconds":  0,
+    "animId":   None,
+}
+
+tileSize = {
+    "w": 300,
+    "h": 400,
 }
 
 constraints = {"x": 440, "y": 500, "z": 80}
 _stop_spraying_flag = False
 
+
 # =================== CONTROL ALGORITHM ===================
 def _sync_connection_status():
-    current_status["connected"] = con.is_connected()
+    currentStatus["connected"] = con.is_connected()
 
 def stop_process():
     global _stop_spraying_flag
     _stop_spraying_flag = True
     ok, msg = con.emergency_stop
-    current_status["is_spraying"] = False
-    current_status["lastMessage"] = "Proses dihentikan paksa"
+    currentStatus["isSpraying"] = False
+    currentStatus["lastMessage"] = "Proses dihentikan paksa"
     return ok, msg
 
 def pause_process():
     _sync_connection_status()
-    if not current_status["connected"]:
+    if not currentStatus["connected"]:
         return {"success": False, "message": "Mesin sedang tidak berjalan"}
     
     ok, msg = con.pause()
     if ok:
-        current_status["is_paused"] = True
-        current_status["paused_at_pos"] =  current_status["mPos"].copy()
-        current_status["lastMessage"] = "Proses dijeda pada koordinat x{:.2f} y{:.2f} z{:.2f}".format(*current_status["mPos"])
-        return {"success": True, "message": msg, "status": current_status}
+        currentStatus["isPaused"] = True
+        currentStatus["pausedAtPos"] =  currentStatus["position"].copy()
+        currentStatus["lastMessage"] = "Proses dijeda pada koordinat x{:.2f} y{:.2f} z{:.2f}".format(*currentStatus["position"])
+        return {"success": True, "message": msg, "status": currentStatus}
 
 def resume_process():
     _sync_connection_status()
-    if not current_status["connected"]:
+    if not currentStatus["connected"]:
         return {"success": False, "message": "Mesin sedang tidak berjalan"}
     
     ok, msg = con.resume()
     if ok:
-        current_status["is_paused"] = False
-        current_status["lastMessage"] = "Proses dilanjutkan dari koordinat x{:.2f} y{:.2f} z{:.2f}".format(*current_status["paused_at_pos"])
-        return {"success": True, "message": msg, "status": current_status}
+        currentStatus["isPaused"] = False
+        currentStatus["lastMessage"] = "Proses dilanjutkan dari koordinat x{:.2f} y{:.2f} z{:.2f}".format(*currentStatus["pausedAtPos"])
+        return {"success": True, "message": msg, "status": currentStatus}
 
 # =================== SPRAYING ALGORITHM ===================
 
@@ -125,20 +145,20 @@ async def run_spraying_algorithm(data: SprayingRequest):
     _stop_spraying_flag = False
     
     _sync_connection_status()
-    if not current_status["connected"]:
-        current_status["lastMessage"] = "Gagal mulai, mesin tidak terkoneksi."
+    if not currentStatus["connected"]:
+        currentStatus["lastMessage"] = "Gagal mulai, mesin tidak terkoneksi."
         return
 
     if data.panjang > constraints["x"] or data.lebar > constraints["y"]:
-        current_status["lastMessage"] = "Ukuran genteng melebihi batasan maksimum area mesin!"
+        currentStatus["lastMessage"] = "Ukuran genteng melebihi batasan maksimum area mesin!"
         return
 
     gcode_commands = spraying_gcode(data.panjang, data.lebar, data.step_over, data.feed_rate)
     total_commands = len(gcode_commands)
     
-    current_status["is_spraying"] = True
-    current_status["is_paused"] = False # Reset status pause
-    current_status["progress"] = 0.0
+    currentStatus["isSpraying"] = True
+    currentStatus["isPaused"] = False # Reset status pause
+    currentStatus["progress"] = 0.0
 
     for idx, cmd in enumerate(gcode_commands):
         # 1. Cek Emergency Stop
@@ -146,10 +166,10 @@ async def run_spraying_algorithm(data: SprayingRequest):
             break
         
         # 2. SEGMEN MENAHAN LOOP JIKA DI-PAUSE
-        while current_status["is_paused"]:
+        while currentStatus["isPaused"]:
             if _stop_spraying_flag: # Tetap bisa e-stop pas lagi di-pause
                 break
-            await asyncio.sleep(0.1) # Tunggu sampai is_paused jadi False (tombol resume ditekan)
+            await asyncio.sleep(0.1) # Tunggu sampai isPaused jadi False (tombol resume ditekan)
 
         if _stop_spraying_flag:
             break
@@ -157,36 +177,36 @@ async def run_spraying_algorithm(data: SprayingRequest):
         # 3. Eksekusi Kirim Command G-code
         ok, msg = con.send_command(cmd)
         if not ok:
-            current_status["lastMessage"] = f"Error saat eksekusi: {cmd}. Loop dibatalkan."
+            currentStatus["lastMessage"] = f"Error saat eksekusi: {cmd}. Loop dibatalkan."
             break
         
-        # Update mPos internal berdasarkan command pergerakan terakhir (G1 X... Y...)
+        # Update position internal berdasarkan command pergerakan terakhir (G1 X... Y...)
         # Ini tracking software kasar sebelum lu implementasi parsing status query GRBL (?)
         if "G1" in cmd:
             parts = cmd.split()
             for part in parts:
-                if part.startswith("X"): current_status["mPos"][0] = float(part[1:])
-                elif part.startswith("Y"): current_status["mPos"][1] = float(part[1:])
-                elif part.startswith("Z"): current_status["mPos"][2] = float(part[1:])
+                if part.startswith("X"): currentStatus["position"][0] = float(part[1:])
+                elif part.startswith("Y"): currentStatus["position"][1] = float(part[1:])
+                elif part.startswith("Z"): currentStatus["position"][2] = float(part[1:])
         
         # Update progress realtime
-        current_status["progress"] = round(((idx + 1) / total_commands) * 100, 2)
-        current_status["lastMessage"] = f"Mengeksekusi baris {idx+1}/{total_commands}: {cmd}"
-        current_status["lastReport"] = msg
+        currentStatus["progress"] = round(((idx + 1) / total_commands) * 100, 2)
+        currentStatus["lastMessage"] = f"Mengeksekusi baris {idx+1}/{total_commands}: {cmd}"
+        currentStatus["lastReport"] = msg
         
         await asyncio.sleep(0.05)
 
     if not _stop_spraying_flag:
-        current_status["progress"] = 100.0
-        current_status["lastMessage"] = "Proses spraying genteng SELESAI dengan sukses!"
+        currentStatus["progress"] = 100.0
+        currentStatus["lastMessage"] = "Proses spraying genteng SELESAI dengan sukses!"
     
-    current_status["is_spraying"] = False
-    current_status["is_paused"] = False
+    currentStatus["isSpraying"] = False
+    currentStatus["isPaused"] = False
 
 def jog_machine(direction: str, step: float, feed: float):
     _sync_connection_status()
 
-    x, y, z = current_status["mPos"]
+    x, y, z = currentStatus["position"]
     ok = False
     msg = ""
 
@@ -208,8 +228,8 @@ def jog_machine(direction: str, step: float, feed: float):
     elif direction == "Z-":
         axis, sign, current, limit = "Z", "-", z, 0
     else:
-        current_status["lastMessage"] = f"Direction tidak valid: {direction}"
-        return current_status
+        currentStatus["lastMessage"] = f"Direction tidak valid: {direction}"
+        return currentStatus
 
     # Hitung step aktual sesuai constraint
     if sign == "+":
@@ -222,14 +242,14 @@ def jog_machine(direction: str, step: float, feed: float):
         target = current - actual_step
 
     if actual_step <= 0:
-        current_status["lastMessage"] = f"Tidak bisa jog {direction}, sudah di batas constrain"
-        return current_status
+        currentStatus["lastMessage"] = f"Tidak bisa jog {direction}, sudah di batas constrain"
+        return currentStatus
 
     ok, msg = con.jog_move(axis, target, feed)
 
     if not ok:
-        current_status["lastMessage"] = msg
-        return current_status
+        currentStatus["lastMessage"] = msg
+        return currentStatus
 
     if axis == "X":
         x = target
@@ -238,44 +258,44 @@ def jog_machine(direction: str, step: float, feed: float):
     elif axis == "Z":
         z = target
 
-    current_status["mPos"] = [x, y, z]
-    current_status["feed"] = feed
-    current_status["lastMessage"] = f"Jog {direction} {actual_step}mm @ F{feed}"
-    current_status["lastReport"] = msg
+    currentStatus["position"] = [x, y, z]
+    currentStatus["feed"] = feed
+    currentStatus["lastMessage"] = f"Jog {direction} {actual_step}mm @ F{feed}"
+    currentStatus["lastReport"] = msg
 
     _sync_connection_status()
-    print("UPDATED:", current_status)
+    print("UPDATED:", currentStatus)
 
-    return current_status
+    return currentStatus
 
 # =================== SETUP HANDLER ===================
 
 def set_calibration(cx: float, cy: float, cz: float, feed: float):
 
     if cx < 0 or cy < 0 or cz < 0:
-        current_status["lastMessage"] = "Koordinat tidak boleh negatif"
-        return current_status
+        currentStatus["lastMessage"] = "Koordinat tidak boleh negatif"
+        return currentStatus
 
     if cx > constraints["x"] or cy > constraints["y"] or cz > constraints["z"]:
-        current_status["lastMessage"] = "Koordinat melebihi constraint"
-        return current_status
+        currentStatus["lastMessage"] = "Koordinat melebihi constraint"
+        return currentStatus
 
     # Trigger the actuator
     ok, msg = con.calib_move(cx, cy, cz, feed)
 
     if not ok:
-        current_status["lastMessage"] = msg
-        return current_status
+        currentStatus["lastMessage"] = msg
+        return currentStatus
 
-    current_status["mPos"] = [cx, cy, cz]
-    current_status["lastMessage"] = f"Jog to x{cx} y{cy} z{cz}"
-    current_status["lastReport"] = msg
+    currentStatus["position"] = [cx, cy, cz]
+    currentStatus["lastMessage"] = f"Jog to x{cx} y{cy} z{cz}"
+    currentStatus["lastReport"] = msg
 
-    return current_status
+    return currentStatus
 
 # Set the starting point (0, 0, 0)
 def set_starting_point(zx: float, zy: float, zz: float):
-    x, y, z = current_status["mPos"]
+    x, y, z = currentStatus["position"]
 
     x = zx
     y = zy
@@ -284,13 +304,13 @@ def set_starting_point(zx: float, zy: float, zz: float):
     ok, msg = con.set_absolute_position()
     ok, msg = con.set_starting_point(x, y, z)
 
-    current_status["mPos"] = [x, y, z]
-    current_status["lastMessage"] = f"Set starting: x{x} y{y} z{z}"
-    current_status["lastReport"] = msg
+    currentStatus["position"] = [x, y, z]
+    currentStatus["lastMessage"] = f"Set starting: x{x} y{y} z{z}"
+    currentStatus["lastReport"] = msg
 
-    print("UPDATED:", current_status)
+    print("UPDATED:", currentStatus)
     
-    return current_status
+    return currentStatus
 
 def to_starting_point(to_x:float, to_y:float, to_z:float, feed:float):
 
@@ -302,19 +322,33 @@ def to_starting_point(to_x:float, to_y:float, to_z:float, feed:float):
     ok, msg = con.go_to_zero(to_x, to_y, to_z, feed)
 
     # Update current position and speed
-    current_status["mPos"] = [to_x, to_y, to_z]
-    current_status["feed"] = feed
-    current_status["lastMessage"] = f"Go to ZERO: {to_x} y{to_y} z{to_z}"
-    current_status["lastReport"] = msg
+    currentStatus["position"] = [to_x, to_y, to_z]
+    currentStatus["feed"] = feed
+    currentStatus["lastMessage"] = f"Go to ZERO: {to_x} y{to_y} z{to_z}"
+    currentStatus["lastReport"] = msg
 
-    print("UPDATED:", current_status)
+    print("UPDATED:", currentStatus)
     
-    return current_status
+    return currentStatus
+
+def emergency_stop():
+    ok, msg = con.emergency_stop()
+
+    # Update current position and speed
+    currentStatus["isSpraying"] =  False,
+    currentStatus["connected"] =  False,
+    currentStatus["progress"] = 0,
+    currentStatus["lastMessage"] = msg,
+    currentStatus["emergency_stop"] = False
+
+    print("UPDATED:", currentStatus)
+    
+    return currentStatus
 
 # =================== STATUS  ===================
 def get_status():
     _sync_connection_status()
-    return current_status
+    return currentStatus
 
 def get_constraints():
     return constraints

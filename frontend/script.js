@@ -1,20 +1,21 @@
-// ======================= INIT =======================
-lucide.createIcons();
+// ---------------------------------- Global State ----------------------------------
 
-
-// ======================= GLOBAL STATE =======================
-
-const machineStatus = {
-    pos:         [0.00, 0.00, 50.00],  // [x, y, z]
-    wPos:        [0.00, 0.00, 0.00],
-    wco:         [0.00, 0.00, 0.00],
-    feed:        0,
-    spindle:     0,
+// Satu-satunya sumber kebenaran state mesin (disinkronkan dari backend)
+let currentStatus = {
+    position:    [0.00, 0.00, 0.00],  // [x, y, z]
+    pausedAtPos: [0.0, 0.0, 0.0],
+    isSpraying:  false,
+    isPaused:    false,
     connected:   false,
+    startPoint:  false,
+    constraints: false,
+    feed:        1000,
+    progress:    0,
     lastReport:  '-',
     lastMessage: 'GRBL ready',
 };
 
+// State spray (lokal, tidak perlu disinkronkan ke backend)
 const sprayState = {
     isActive: false,
     isPaused: false,
@@ -29,25 +30,11 @@ const tileSize = {
     h: 400,
 };
 
-const jogSettings = {
-    step:  1,
-    speed: 1200,
-};
-
-const constraints = {
-    x: 150,
-    y: 100,
-    z: 40,
-};
-
-let hasStartPoint = false;
-let constraintsOk = true;
-
 // 'disconnected' | 'connecting' | 'connected' | 'disconnecting'
 let connectionState = 'disconnected';
 
 
-// ======================= DOM ELEMENTS =======================
+// ---------------------------------- DOM Elements ----------------------------------
 
 const DOM = {
     time: document.getElementById('currentTime'),
@@ -96,10 +83,47 @@ const DOM = {
 const ctx = DOM.canvas.el.getContext('2d');
 
 
-// ======================= WEBSOCKET =======================
-// WebSocket otomatis terhubung saat halaman dibuka.
-// Hanya untuk menerima status real-time dari backend,
-// bukan untuk mengontrol koneksi serial port.
+// ---------------------------------- Data Management ----------------------------------
+
+function updateStatus(newData) {
+    // Guard: pastikan position tetap array jika backend kirim format berbeda
+    if (newData.position && !Array.isArray(newData.position)) {
+        delete newData.position;
+    }
+
+    currentStatus = { ...currentStatus, ...newData };
+    updateStatusUI();
+    if (typeof drawCoordinateGraph === 'function') drawCoordinateGraph();
+}
+
+
+// ---------------------------------- Send Data ----------------------------------
+
+async function sendData(data, type) {
+    logMsg(`Send [${type}] → backend`);
+    const API_BASE = window.location.origin;
+
+    try {
+        const response = await fetch(`${API_BASE}/${type}`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(data),
+        });
+
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Backend menolak request');
+        return result;
+
+    } catch (err) {
+        logMsg(`Gagal mengirim [${type}]: ${err.message}`, true);
+        return null;
+    }
+}
+
+
+// ---------------------------------- WebSocket ----------------------------------
+// Auto-connect saat page load. Hanya untuk menerima
+// status real-time; bukan untuk kontrol koneksi serial.
 
 let ws = null;
 
@@ -111,33 +135,28 @@ function connectWebSocket() {
 
     ws.onopen = () => {
         logMsg('Terhubung ke server ✅');
-        fetchAvailablePorts(); // Ambil daftar port saat WS siap
+        fetchAvailablePorts();
     };
 
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        console.log('WS DATA:', data);
 
-        // Sinkronisasi status dari backend
-        Object.assign(machineStatus, data);
+        updateStatus(data);
 
-        // Sinkronisasi posisi jika ada dari backend
-        if (data.mPos) machineStatus.pos = [...data.mPos];
-
-        // Update connectionState berdasarkan field 'connected' dari backend
+        // Sinkronisasi connectionState dari field 'connected' backend
         if (typeof data.connected === 'boolean') {
-            const prev = connectionState;
-            connectionState = data.connected ? 'connected' : 'disconnected';
-            if (prev !== connectionState) updateConnectionUI();
+            const newState = data.connected ? 'connected' : 'disconnected';
+            if (connectionState !== newState) {
+                connectionState = newState;
+                updateConnectionUI();
+            }
         }
-
-        updateStatusUI();
-        if (typeof drawCoordinateGraph === 'function') drawCoordinateGraph();
     };
 
     ws.onclose = () => {
         logMsg('Koneksi ke server terputus ❌', true);
-        // Coba reconnect setelah 3 detik
-        setTimeout(connectWebSocket, 3000);
+        setTimeout(connectWebSocket, 3000); // auto-reconnect
     };
 
     ws.onerror = (err) => {
@@ -147,7 +166,7 @@ function connectWebSocket() {
 }
 
 
-// ======================= PORT MANAGEMENT =======================
+// ---------------------------------- Port Management ----------------------------------
 
 async function fetchAvailablePorts() {
     try {
@@ -156,62 +175,55 @@ async function fetchAvailablePorts() {
 
         DOM.spray.portSelect.innerHTML = '';
 
-        if (ports.length === 0) {
-            DOM.spray.portSelect.innerHTML = '<option value="">-- No ports found --</option>';
+        if (!ports.length) {
+            DOM.spray.portSelect.innerHTML = '<option value="">-- Tidak ada port --</option>';
             logMsg('Tidak ada port serial yang tersedia.', true);
             return;
         }
 
         ports.forEach(p => {
-            const opt = document.createElement('option');
+            const opt       = document.createElement('option');
             opt.value       = p.device;
-            opt.textContent = `${p.device} — ${p.description}`;
+            opt.textContent = `${p.device} (${p.description})`;
             DOM.spray.portSelect.appendChild(opt);
         });
 
         logMsg(`${ports.length} port ditemukan.`);
+
     } catch (err) {
-        logMsg('Gagal mengambil daftar port.', true);
-        console.error('fetchAvailablePorts error:', err);
+        DOM.spray.portSelect.innerHTML = '<option value="">-- Gagal load port --</option>';
+        console.warn('Gagal load port, pastikan backend jalan.');
     }
 }
 
 
-// ======================= CONNECTION LOGIC =======================
-// Tombol Connect/Disconnect mengontrol koneksi ke serial port
-// melalui REST API backend, bukan WebSocket.
+// ---------------------------------- Connection Logic ----------------------------------
 
 function updateConnectionUI() {
-    const isConn         = connectionState === 'connected';
-    const isConnecting   = connectionState === 'connecting';
+    const isConn          = connectionState === 'connected';
+    const isConnecting    = connectionState === 'connecting';
     const isDisconnecting = connectionState === 'disconnecting';
-    const isBusy         = isConnecting || isDisconnecting;
+    const isBusy          = isConnecting || isDisconnecting;
 
-    // --- Global header indicator ---
-    DOM.conn.dot.classList.toggle('bg-success',     isConn);
-    DOM.conn.dot.classList.toggle('bg-warning',     isBusy);
-    DOM.conn.dot.classList.toggle('bg-danger',      !isConn && !isBusy);
-    DOM.conn.dot.classList.toggle('animate-pulse',  !isConn);
+    // Global header
+    DOM.conn.dot.classList.toggle('bg-success',    isConn);
+    DOM.conn.dot.classList.toggle('bg-warning',    isBusy);
+    DOM.conn.dot.classList.toggle('bg-danger',     !isConn && !isBusy);
+    DOM.conn.dot.classList.toggle('animate-pulse', !isConn);
 
-    if (isConn)            DOM.conn.text.innerText = 'CONNECTED';
-    else if (isConnecting) DOM.conn.text.innerText = 'CONNECTING...';
-    else                   DOM.conn.text.innerText = 'DISCONNECTED';
-
+    DOM.conn.text.innerText = isConn ? 'CONNECTED' : isConnecting ? 'CONNECTING...' : 'DISCONNECTED';
     DOM.conn.text.classList.toggle('text-success',    isConn);
     DOM.conn.text.classList.toggle('text-warning',    isConnecting);
     DOM.conn.text.classList.toggle('text-text-muted', !isConn && !isConnecting);
 
-    // --- Spray page indicator ---
+    // Spray page indicator
     DOM.spray.connDot.classList.toggle('bg-success', isConn);
     DOM.spray.connDot.classList.toggle('bg-warning',  isBusy);
     DOM.spray.connDot.classList.toggle('bg-danger',   !isConn && !isBusy);
+    DOM.spray.connText.innerText = isConn ? 'Connected' : isConnecting ? 'Connecting...' : 'Disconnected';
 
-    if (isConn)            DOM.spray.connText.innerText = 'Connected';
-    else if (isConnecting) DOM.spray.connText.innerText = 'Connecting...';
-    else                   DOM.spray.connText.innerText = 'Disconnected';
-
-    // --- Buttons ---
-    DOM.spray.btnConnect.classList.toggle('hidden',   isConn || isBusy);
+    // Buttons & select
+    DOM.spray.btnConnect.classList.toggle('hidden',    isConn || isBusy);
     DOM.spray.btnDisconnect.classList.toggle('hidden', !isConn || isBusy);
     DOM.spray.btnConnect.disabled    = isBusy;
     DOM.spray.btnDisconnect.disabled = isBusy;
@@ -222,7 +234,7 @@ DOM.spray.btnConnect.addEventListener('click', async () => {
     if (connectionState !== 'disconnected') return;
 
     const port     = DOM.spray.portSelect.value;
-    const baudrate = 115200; // default GRBL
+    const baudrate = 115200;
 
     if (!port) { logMsg('Pilih port terlebih dahulu.', true); return; }
 
@@ -230,31 +242,17 @@ DOM.spray.btnConnect.addEventListener('click', async () => {
     updateConnectionUI();
     logMsg(`Menghubungkan ke ${port} @ ${baudrate}bps...`);
 
-    try {
-        const res  = await fetch('/connect', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ port, baudrate }),
-        });
-        const data = await res.json();
+    const result = await sendData({ port, baudrate }, 'connect');
 
-        if (data.success) {
-            connectionState = 'connected';
-            logMsg(`Terhubung ke GRBL pada ${port} ✅`);
-            logMsg(data.message, false, true);
-            if (data.status) Object.assign(machineStatus, data.status);
-        } else {
-            connectionState = 'disconnected';
-            logMsg(`Gagal terhubung: ${data.message}`, true);
-        }
-    } catch (err) {
+    if (result) {
+        connectionState = result.status?.connected ? 'connected' : 'disconnected';
+        logMsg(result.message, !result.success);
+        if (result.status) updateStatus(result.status);
+    } else {
         connectionState = 'disconnected';
-        logMsg('Error saat menghubungkan ke backend.', true);
-        console.error('Connect error:', err);
     }
 
     updateConnectionUI();
-    updateStatusUI();
 });
 
 DOM.spray.btnDisconnect.addEventListener('click', async () => {
@@ -264,29 +262,19 @@ DOM.spray.btnDisconnect.addEventListener('click', async () => {
     updateConnectionUI();
     logMsg('Memutus koneksi serial port...');
 
-    try {
-        const res  = await fetch('/disconnect', { method: 'POST' });
-        const data = await res.json();
+    const result = await sendData({}, 'disconnect');
 
-        connectionState = 'disconnected';
-        logMsg(data.success
-            ? `Port diputus: ${data.message}`
-            : `Gagal memutus: ${data.message}`,
-            !data.success
-        );
-        if (data.status) Object.assign(machineStatus, data.status);
-    } catch (err) {
-        connectionState = 'disconnected';
-        logMsg('Error saat memutus koneksi.', true);
-        console.error('Disconnect error:', err);
+    connectionState = 'disconnected';
+    if (result) {
+        logMsg(result.message, !result.success);
+        if (result.status) updateStatus(result.status);
     }
 
     updateConnectionUI();
-    updateStatusUI();
 });
 
 
-// ======================= CLOCK & TIMER =======================
+// ---------------------------------- Clock & Timer ----------------------------------
 
 setInterval(() => {
     DOM.time.innerText = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -304,7 +292,7 @@ setInterval(() => {
 }, 1000);
 
 
-// ======================= NAVIGATION =======================
+// ---------------------------------- Navigation ----------------------------------
 
 function switchTab(tabId) {
     ['spray-page', 'manual-page'].forEach(id => {
@@ -325,8 +313,8 @@ function switchTab(tabId) {
     inactiveNav.classList.remove(...activeClasses);
 
     const getBadge = nav => nav.querySelectorAll('span')[1];
-    getBadge(activeNav)?.classList.replace('bg-input-bg',    'bg-primary/20');
-    getBadge(activeNav)?.classList.replace('text-text-muted','text-primary');
+    getBadge(activeNav)?.classList.replace('bg-input-bg',     'bg-primary/20');
+    getBadge(activeNav)?.classList.replace('text-text-muted', 'text-primary');
     getBadge(inactiveNav)?.classList.replace('bg-primary/20', 'bg-input-bg');
     getBadge(inactiveNav)?.classList.replace('text-primary',  'text-text-muted');
 
@@ -334,22 +322,22 @@ function switchTab(tabId) {
 }
 
 
-// ======================= STATUS UPDATE =======================
+// ---------------------------------- Status Update ----------------------------------
 
 function updateStatusUI() {
-    const [x, y, z] = machineStatus.pos;
+    const [x, y, z] = currentStatus.position;
 
-    DOM.status.coords[0].innerText  = x.toFixed(2);
-    DOM.status.coords[1].innerText  = y.toFixed(2);
-    DOM.status.coords[2].innerText  = z.toFixed(2);
+    DOM.status.coords[0].innerText  = Number(x).toFixed(2);
+    DOM.status.coords[1].innerText  = Number(y).toFixed(2);
+    DOM.status.coords[2].innerText  = Number(z).toFixed(2);
     DOM.status.percent.innerText    = Math.round(sprayState.progress) + '%';
-    DOM.status.startPt.innerText    = hasStartPoint ? 'True'  : 'False';
-    DOM.status.constraint.innerText = constraintsOk  ? 'ON'   : 'OFF';
-    DOM.status.speed.innerText      = jogSettings.speed.toFixed(1);
+    DOM.status.startPt.innerText    = currentStatus.startPoint  ? 'true' : 'false';
+    DOM.status.constraint.innerText = currentStatus.constraints ? 'ON'   : 'OFF';
+    DOM.status.speed.innerText      = Number(currentStatus.feed).toFixed(1);
 }
 
 
-// ======================= CONSOLE LOGGING =======================
+// ---------------------------------- Console Logging ----------------------------------
 
 function logMsg(msg, isError = false, toManualOnly = false) {
     const time  = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -369,67 +357,52 @@ function clearConsole(id) {
 }
 
 
-// ======================= MANUAL JOG =======================
+// ---------------------------------- Manual Page Task ----------------------------------
 
-function jog(dir) {
+async function jog(dir) {
     if (connectionState !== 'connected') { logMsg('Cannot jog: Not connected.', true); return; }
     if (sprayState.isActive)             { logMsg('Cannot jog: Machine is busy.', true); return; }
 
-    jogSettings.step  = parseFloat(document.getElementById('jogStepInput').value) || 1;
-    jogSettings.speed = parseInt(document.getElementById('jogSpeedInput').value)   || 1200;
+    const step  = parseFloat(document.getElementById('jogStepInput').value) || 1;
+    const speed = parseInt(document.getElementById('jogSpeedInput').value)   || 1000;
 
-    const delta = {
-        'X+': [ 1, 0, 0], 'X-': [-1, 0, 0],
-        'Y+': [ 0, 1, 0], 'Y-': [ 0,-1, 0],
-        'Z+': [ 0, 0, 1], 'Z-': [ 0, 0,-1],
-    };
-    const d = delta[dir];
-    if (d) machineStatus.pos = machineStatus.pos.map((v, i) => v + d[i] * jogSettings.step);
+    const result = await sendData({ direction: dir, step, feed: speed, constraint: currentStatus.constraints }, 'jog');
 
-    logMsg(`G91 G0 ${dir[0]}${dir[1] === '+' ? '' : '-'}${jogSettings.step} F${jogSettings.speed}`, false, true);
-    updateStatusUI();
-    drawCanvas();
+    if (result) {
+        updateStatus(result);
+        logMsg(`Jog ${dir} → step=${step} F=${speed}`, false, true);
+    }
 }
 
-function setStartingPoint() {
+async function setStartingPoint() {
     if (connectionState !== 'connected') return;
-    machineStatus.pos[0] = 0;
-    machineStatus.pos[1] = 0;
-    hasStartPoint = true;
-    logMsg('G92 X0 Y0 (Set Zero)');
-    updateStatusUI();
-    drawCanvas();
+
+    const result = await sendData({ zx: 0.0, zy: 0.0, zz: 0.0, start: true }, 'set-starting-point');
+
+    if (result) {
+        updateStatus(result);
+        logMsg('G92 X0 Y0 Z0 — Starting point set ✅');
+    }
 }
 
-function goHome() {
+async function goHome() {
     if (connectionState !== 'connected') return;
-    logMsg('G90 G0 X0 Y0 (Go to Start)');
 
-    const interval = setInterval(() => {
-        const [x, y] = machineStatus.pos;
-        const dist   = Math.hypot(-x, -y);
+    const speed  = parseInt(document.getElementById('jogSpeedInput')?.value) || 1000;
+    const result = await sendData({ to_x: 0.0, to_y: 0.0, to_z: 0.0, feed: speed }, 'back-to-start');
 
-        if (dist < 1) {
-            machineStatus.pos[0] = 0;
-            machineStatus.pos[1] = 0;
-            clearInterval(interval);
-            logMsg('Reached Start Point.');
-        } else {
-            machineStatus.pos[0] += (-x) * 0.2;
-            machineStatus.pos[1] += (-y) * 0.2;
-        }
-        updateStatusUI();
-        drawCanvas();
-    }, 50);
+    if (result) {
+        updateStatus(result);
+        logMsg('G0 X0 Y0 — Returning to start point');
+    }
 }
 
 
-// ======================= SPRAY CANVAS =======================
+// ---------------------------------- Spray Canvas ----------------------------------
 
 function updateCanvasDim() {
     tileSize.w = parseInt(document.getElementById('tileWidth').value)  || 300;
     tileSize.h = parseInt(document.getElementById('tileHeight').value) || 400;
-    logMsg(`Dimensions set to ${tileSize.w}mm x ${tileSize.h}mm`);
     resizeCanvas();
 }
 
@@ -489,12 +462,13 @@ function renderLoop(time) {
 }
 
 
-// ======================= SPRAY SEQUENCE =======================
+// ---------------------------------- Spray Sequence ----------------------------------
 
-DOM.spray.btnStart.addEventListener('click', () => {
+DOM.spray.btnStart.addEventListener('click', async () => {
     if (connectionState !== 'connected') { alert('Please connect to machine first.'); return; }
-    if (!hasStartPoint)                  { alert('Please set starting point (G92) in Manual Page first.'); return; }
+    if (!currentStatus.startPoint)       { alert('Please set starting point (G92) in Manual Page first.'); return; }
 
+    // Resume jika sedang pause
     if (sprayState.isActive && sprayState.isPaused) {
         sprayState.isPaused = false;
         DOM.spray.btnPause.innerHTML = '<i data-lucide="pause" class="w-4 h-4"></i><span>PAUSE</span>';
@@ -504,9 +478,10 @@ DOM.spray.btnStart.addEventListener('click', () => {
         return;
     }
 
+    // Mulai spray baru
     Object.assign(sprayState, { isActive: true, isPaused: false, path: [], progress: 0, seconds: 0 });
-    machineStatus.pos[0] = 0;
-    machineStatus.pos[1] = 0;
+    currentStatus.position[0] = 0;
+    currentStatus.position[1] = 0;
     DOM.status.timer.innerText = '00:00:00';
 
     DOM.spray.btnStart.disabled = true;
@@ -515,6 +490,7 @@ DOM.spray.btnStart.addEventListener('click', () => {
 
     logMsg('=== SPRAY JOB STARTED ===');
     logMsg(`Target: ${tileSize.w}x${tileSize.h}mm`);
+
     simulateSprayPath();
 });
 
@@ -532,8 +508,9 @@ DOM.spray.btnPause.addEventListener('click', () => {
     lucide.createIcons();
 });
 
-function triggerEstop() {
+async function triggerEstop() {
     if (connectionState !== 'connected') return;
+
     Object.assign(sprayState, { isActive: false, isPaused: false });
     cancelAnimationFrame(sprayState.animId);
 
@@ -542,7 +519,12 @@ function triggerEstop() {
     DOM.spray.btnPause.classList.add('hidden');
 
     logMsg('!!! EMERGENCY STOP !!!', true);
-    logMsg('Machine halted.', true);
+
+    const result = await sendData({}, 'emergency-stop');
+    if (result) {
+        updateStatus(result);
+        logMsg('Machine halted.', true);
+    }
 
     document.body.classList.add('ring-4', 'ring-inset', 'ring-danger');
     setTimeout(() => document.body.classList.remove('ring-4', 'ring-inset', 'ring-danger'), 500);
@@ -579,14 +561,14 @@ function simulateSprayPath() {
         const dt       = (time - lastTime) / 1000;
         lastTime       = time;
         const target   = targetPath[targetIdx];
-        const dx       = target.x - machineStatus.pos[0];
-        const dy       = target.y - machineStatus.pos[1];
+        const dx       = target.x - currentStatus.position[0];
+        const dy       = target.y - currentStatus.position[1];
         const dist     = Math.hypot(dx, dy);
         const moveDist = simSpeed * dt;
 
         if (dist <= moveDist) {
-            machineStatus.pos[0] = target.x;
-            machineStatus.pos[1] = target.y;
+            currentStatus.position[0] = target.x;
+            currentStatus.position[1] = target.y;
             sprayState.path.push({ x: target.x, y: target.y });
             targetIdx++;
 
@@ -603,10 +585,10 @@ function simulateSprayPath() {
                 return;
             }
         } else {
-            machineStatus.pos[0] += (dx / dist) * moveDist;
-            machineStatus.pos[1] += (dy / dist) * moveDist;
-            sprayState.path.push({ x: machineStatus.pos[0], y: machineStatus.pos[1] });
-            sprayState.progress = Math.min(99, (machineStatus.pos[1] / tileSize.h) * 100);
+            currentStatus.position[0] += (dx / dist) * moveDist;
+            currentStatus.position[1] += (dy / dist) * moveDist;
+            sprayState.path.push({ x: currentStatus.position[0], y: currentStatus.position[1] });
+            sprayState.progress = Math.min(99, (currentStatus.position[1] / tileSize.h) * 100);
         }
 
         updateStatusUI();
@@ -624,18 +606,35 @@ function updateProgressUI() {
 }
 
 
-// ======================= BOOT =======================
+// ---------------------------------- Boot ----------------------------------
 
-window.addEventListener('resize', resizeCanvas);
-updateStatusUI();
-updateConnectionUI();
+window.addEventListener('DOMContentLoaded', () => {
 
-setTimeout(() => {
-    resizeCanvas();
-    requestAnimationFrame(renderLoop);
-}, 100);
+    console.log('DOM LOADED');
 
-updateCanvasDim();
+    lucide.createIcons();
 
-// WebSocket auto-connect saat halaman dibuka
-connectWebSocket();
+    window.addEventListener('resize', resizeCanvas);
+
+    updateStatusUI();
+    updateConnectionUI();
+    updateCanvasDim();
+
+    setTimeout(() => {
+
+        console.log('SETTIMEOUT JALAN');
+
+        resizeCanvas();
+
+        console.log('RESIZE DONE');
+
+        requestAnimationFrame(renderLoop);
+
+        console.log('RENDER LOOP START');
+
+        connectWebSocket();
+
+        console.log('WEBSOCKET CONNECT');
+
+    }, 100);
+});

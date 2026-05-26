@@ -1,7 +1,7 @@
 import asyncio
 import serial.tools.list_ports
 
-# FastAPI: Handling komunikasi ke python, WebSocket: Untuk komunikasi real-time
+# FastAPI: Handling komunikasi ke python, WebSocket: for real time communication
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 # Module Lokal
 from backend import machine as mcn
 from backend import connection as con
-from backend.machine import JogRequest, SetCalibration, SetStartingPoint, ToStartingPoint, ConnectRequest, SetConstraints
+from backend.machine import ConnectRequest, JogRequest, SetCalibration, SetStartingPoint, ToStartingPoint
 
 app = FastAPI()
 
@@ -35,7 +35,7 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while True:
             await ws.send_json(mcn.get_status())
-            await ws.send_json(mcn.get_constraints())
+            # await ws.send_json(mcn.get_constraints())
             await asyncio.sleep(0.2)
     except WebSocketDisconnect:
         print("Client disconnected from WebSocket")
@@ -78,6 +78,7 @@ def list_ports():
     return [
         {"device": p.device, "description": p.description}
         for p in ports
+        if p.device.startswith("/dev/ttyUSB")
     ]
 
 @app.post("/jog")
@@ -95,7 +96,14 @@ def setStartingPoint(data: SetStartingPoint):
     print("SET START REQUEST:", data)
     return mcn.set_starting_point(data.zx, data.zy, data.zz)
 
-@app.post("/to-starting-point")
+@app.post("/back-to-start")
 def toStartingPoint(data: ToStartingPoint):
     print("TO START REQUEST:", data)
     return mcn.to_starting_point(data.to_x, data.to_y, data.to_z, data.feed)
+
+@app.post("/emergency-stop")
+def emergencyStop():
+    print("EMERGENCY STOP REQUEST:")
+    return mcn.emergency_stop()
+
+# @app.post()

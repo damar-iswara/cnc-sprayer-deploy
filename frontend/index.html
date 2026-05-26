@@ -54,7 +54,7 @@
                 
                 <!-- Logo 1 -->
                 <img 
-                    src="/frontend/images/ftmm_no_bg.png" 
+                    src="/static/images/ftmm_no_bg.png" 
                     alt="FTMM Logo"
                     class="h-10 w-auto object-contain"
                 >
@@ -63,7 +63,7 @@
 
                 <!-- Logo 2 -->
                 <img 
-                    src="/frontend/images/astro_no_bg.png" 
+                    src="/static/images/astro_no_bg.png" 
                     alt="Astro Logo"
                     class="h-10 w-auto object-contain"
                 >
@@ -135,10 +135,7 @@
                         </div>
 
                         <select id="portSelect" class="bg-input-bg border border-border-color text-text-main text-sm rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary block p-2.5 outline-none transition-all font-medium">
-                            <option value="COM1">COM1</option>
-                            <option value="COM2">COM2 (USB)</option>
-                            <option value="COM3" selected>COM3 (CNC Controller)</option>
-                            <option value="/dev/ttyUSB0">/dev/ttyUSB0</option>
+                            <option value="">-- Memuat port... --</option>
                         </select>
 
                         <div class="hidden md:block h-8 w-px bg-border-color mx-2"></div>
@@ -409,6 +406,6 @@
     </div>
 
     <!-- Custom JavaScript -->
-    <script src="static/script.js"></script>
+    <script src="/static/script.js"></script>
 </body>
 </html>
