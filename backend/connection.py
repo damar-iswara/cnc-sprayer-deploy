@@ -117,6 +117,17 @@ def emergency_stop():
     print("Resetting machine state...")
     return send_command("$X")
 
+def reset_buffer():
+    global serial_port
+    if not is_connected():
+        return False, "Serial port tidak terkoneksi"
+    try:
+        serial_port.reset_input_buffer()
+        serial_port.reset_output_buffer()
+        return True, "Buffer reset"
+    except Exception as e:
+        return False, f"Gagal reset buffer: {e}"
+
 # =================== PAUSE-RESUME COMMANDS ===================
 
 def pause():
@@ -140,4 +151,26 @@ def resume():
         return True, "Resume sent"
     except Exception as e:
         return False, f"Gagal Resume:{e}"
-    
+
+def get_grbl_status():
+    global serial_port
+    if not is_connected():
+        return None
+    try:
+        # Kirim perintah interupsi status query murni (?)
+        serial_port.write(b"?")
+        time.sleep(0.02)
+        res = serial_port.readline().decode(errors="ignore").strip()
+        
+        # Contoh respon: <Run|MPos:10.00,90.00,0.00|Bf:15,128|FS:1200,0>
+        if res.startswith("<") and "|" in res:
+            parts = res.replace("<", "").replace(">", "").split("|")
+            for part in parts:
+                if part.startswith("MPos:"):
+                    # Ambil angka koordinat X, Y, Z
+                    coords = part.split(":")[1].split(",")
+                    return [float(coords[0]), float(coords[1]), float(coords[2])]
+        return None
+    except Exception as e:
+        print(f"Gagal mengambil query status GRBL: {e}")
+        return None

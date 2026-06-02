@@ -80,7 +80,7 @@ def _sync_connection_status():
 def stop_process():
     global _stop_spraying_flag
     _stop_spraying_flag = True
-    ok, msg = con.emergency_stop
+    ok, msg = con.emergency_stop()
     currentStatus["isSpraying"] = False
     currentStatus["lastMessage"] = "Proses dihentikan paksa"
     return ok, msg
@@ -111,34 +111,49 @@ def resume_process():
 # =================== SPRAYING ALGORITHM ===================
 
 def spraying_gcode(panjang: float, lebar: float, step_over: float, feed_rate: float):
+    # panjang = panjang - 1
+    # lebar = lebar - 1
     gcode_list = []
     gcode_list.append("G90")
-    gcode_list.append("G1 X0 Y0 F{feed_rate}")
+    gcode_list.append(f"G1 X0 Y0 F{feed_rate}")
 
     current_y = 0.0
     direction = 1
+    total_distance = 0.0  # <--- Variabel penyimpan total panjang jalur mekanis
+    
+    # Titik koordinat awal nosel
+    last_x, last_y = 0.0, 0.0
 
     gcode_list.append("M3")
 
     while current_y <= lebar:
-        if direction == 1:
-            gcode_list.append(f"G1 X{panjang} Y{current_y} F{feed_rate}")
-            current_x = panjang
-        else:
-            gcode_list.append(f"G1 X0 Y{current_y} F{feed_rate}")
-            current_x = 0.0
+        # 1. Tentukan target sapuan X
+        target_x = panjang if direction == 1 else 0.0
+        gcode_list.append(f"G1 X{target_x} Y{current_y} F{feed_rate}")
+        
+        # Hitung jarak sapuan horizontal
+        total_distance += abs(target_x - last_x)
+        last_x = target_x
 
+        # 2. Geser sumbu Y ke baris berikutnya
         current_y += step_over
 
+        # 3. Jalankan manuver belok sudut jika posisi masih di dalam area genteng
         if current_y <= lebar:
-            gcode_list.append(f"G1 X{current_x} Y{current_y} F{feed_rate}")
+            gcode_list.append(f"G1 X{last_x} Y{current_y} F{feed_rate}")
+            
+            # Hitung jarak geser vertikal belokan
+            total_distance += abs(current_y - last_y)
+            last_y = current_y
 
         direction *= -1
 
     gcode_list.append("M5")
     gcode_list.append(f"G1 X0 Y0 F{feed_rate}")
 
-    return gcode_list
+    # con.reset_buffer()  # Pastikan buffer bersih sebelum mulai eksekusi
+
+    return gcode_list, total_distance  # <--- Kembalikan list dan nilai total jaraknya
 
 async def run_spraying_algorithm(data: SprayingRequest):
     global _stop_spraying_flag
@@ -153,48 +168,78 @@ async def run_spraying_algorithm(data: SprayingRequest):
         currentStatus["lastMessage"] = "Ukuran genteng melebihi batasan maksimum area mesin!"
         return
 
-    gcode_commands = spraying_gcode(data.panjang, data.lebar, data.step_over, data.feed_rate)
-    total_commands = len(gcode_commands)
+    # Ambil list perintah dan total jarak absolut program semprot
+    gcode_commands, total_distance = spraying_gcode(data.panjang, data.lebar, data.step_over, data.feed_rate)
     
     currentStatus["isSpraying"] = True
-    currentStatus["isPaused"] = False # Reset status pause
+    currentStatus["isPaused"] = False
     currentStatus["progress"] = 0.0
+    
+    distance_travelled = 0.0  # <--- Variabel pelacak jarak yang sudah dilewati
+    last_tracked_x, last_tracked_y = 0.0, 0.0
 
-    for idx, cmd in enumerate(gcode_commands):
-        # 1. Cek Emergency Stop
+    for cmd in gcode_commands:
         if _stop_spraying_flag:
             break
         
-        # 2. SEGMEN MENAHAN LOOP JIKA DI-PAUSE
         while currentStatus["isPaused"]:
-            if _stop_spraying_flag: # Tetap bisa e-stop pas lagi di-pause
+            if _stop_spraying_flag:
                 break
-            await asyncio.sleep(0.1) # Tunggu sampai isPaused jadi False (tombol resume ditekan)
+            await asyncio.sleep(0.1)
 
         if _stop_spraying_flag:
             break
 
-        # 3. Eksekusi Kirim Command G-code
         ok, msg = con.send_command(cmd)
         if not ok:
             currentStatus["lastMessage"] = f"Error saat eksekusi: {cmd}. Loop dibatalkan."
             break
-        
-        # Update position internal berdasarkan command pergerakan terakhir (G1 X... Y...)
-        # Ini tracking software kasar sebelum lu implementasi parsing status query GRBL (?)
-        if "G1" in cmd:
-            parts = cmd.split()
-            for part in parts:
-                if part.startswith("X"): currentStatus["position"][0] = float(part[1:])
-                elif part.startswith("Y"): currentStatus["position"][1] = float(part[1:])
-                elif part.startswith("Z"): currentStatus["position"][2] = float(part[1:])
-        
-        # Update progress realtime
-        currentStatus["progress"] = round(((idx + 1) / total_commands) * 100, 2)
-        currentStatus["lastMessage"] = f"Mengeksekusi baris {idx+1}/{total_commands}: {cmd}"
+
+        # Ambil koordinat fisik mesin terbaru dari GRBL (?) status query
+        real_pos = con.get_grbl_status()
+        if real_pos:
+            currentStatus["position"] = real_pos
+            
+            # Akumulasikan jarak tempuh real berdasarkan pergerakan nosel terakhir
+            dx = abs(real_pos[0] - last_tracked_x)
+            dy = abs(real_pos[1] - last_tracked_y)
+            distance_travelled += (dx + dy)
+            
+            # Update referensi titik pelacakan terakhir
+            last_tracked_x, last_tracked_y = real_pos[0], real_pos[1]
+
+            # RUMUS BARU: Persentase naik smooth merayap sepanjang jalur gerak nosel
+            if total_distance > 0:
+                calc_progress = (distance_travelled / total_distance) * 100
+                currentStatus["progress"] = min(99.9, max(0.0, round(calc_progress, 2)))
+
+        currentStatus["lastMessage"] = f"Mengeksekusi perintah mesin: {cmd}"
         currentStatus["lastReport"] = msg
         
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
+
+    # Loop monitoring akhir untuk memastikan nosel benar-benar sampai (0,0) sebelum ditutup
+    while currentStatus["progress"] < 100.0 and not _stop_spraying_flag:
+        real_pos = con.get_grbl_status()
+        if real_pos:
+            currentStatus["position"] = real_pos
+            dx = abs(real_pos[0] - last_tracked_x)
+            dy = abs(real_pos[1] - last_tracked_y)
+            distance_travelled += (dx + dy)
+            last_tracked_x, last_tracked_y = real_pos[0], real_pos[1]
+            
+            if total_distance > 0:
+                calc_progress = (distance_travelled / total_distance) * 100
+                # [PERBAIKAN]: Jika sudah lewat atau sama dengan total jalur semprot, langsung set 100%
+                if calc_progress >= 100.0:
+                    currentStatus["progress"] = 100.0
+                    currentStatus["isSpraying"] = False # Status spraying selesai secara fungsional
+                else:
+                    currentStatus["progress"] = round(calc_progress, 2)
+
+        currentStatus["lastMessage"] = f"Mengeksekusi perintah mesin: {cmd}"
+        currentStatus["lastReport"] = msg
+        await asyncio.sleep(0.2)
 
     if not _stop_spraying_flag:
         currentStatus["progress"] = 100.0
@@ -202,6 +247,7 @@ async def run_spraying_algorithm(data: SprayingRequest):
     
     currentStatus["isSpraying"] = False
     currentStatus["isPaused"] = False
+    con.reset_buffer()  # Pastikan buffer bersih setelah eksekusi
 
 def jog_machine(direction: str, step: float, feed: float):
     _sync_connection_status()
@@ -295,17 +341,13 @@ def set_calibration(cx: float, cy: float, cz: float, feed: float):
 
 # Set the starting point (0, 0, 0)
 def set_starting_point(zx: float, zy: float, zz: float):
-    x, y, z = currentStatus["position"]
-
-    x = zx
-    y = zy
-    z = zz
+    currentStatus["startPoint"] = True
 
     ok, msg = con.set_absolute_position()
-    ok, msg = con.set_starting_point(x, y, z)
+    ok, msg = con.set_starting_point(zx, zy, zz)
 
-    currentStatus["position"] = [x, y, z]
-    currentStatus["lastMessage"] = f"Set starting: x{x} y{y} z{z}"
+    currentStatus["position"] = [zx, zy, zz]
+    currentStatus["lastMessage"] = f"Set starting: x{zx} y{zy} z{zz}"
     currentStatus["lastReport"] = msg
 
     print("UPDATED:", currentStatus)
@@ -335,10 +377,11 @@ def emergency_stop():
     ok, msg = con.emergency_stop()
 
     # Update current position and speed
-    currentStatus["isSpraying"] =  False,
-    currentStatus["connected"] =  False,
-    currentStatus["progress"] = 0,
-    currentStatus["lastMessage"] = msg,
+    currentStatus["isSpraying"] =  False
+    currentStatus["isPaused"] = False
+    currentStatus["connected"] =  False
+    currentStatus["progress"] = 0
+    currentStatus["lastMessage"] = msg
     currentStatus["emergency_stop"] = False
 
     print("UPDATED:", currentStatus)

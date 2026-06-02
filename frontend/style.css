@@ -1,38 +1,40 @@
 /* Custom Scrollbar for Light Theme */
 ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-    background: #f1f5f9;
+  background: #f1f5f9;
 }
 ::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
-    border-radius: 4px;
+  background: #cbd5e1;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8;
+  background: #94a3b8;
 }
 
 /* Clean White Panels with Soft Shadows */
 .glass-panel {
-    background: #ffffff;
-    border: 1px solid rgba(226, 232, 240, 0.6);
-    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.03), 0 8px 10px -6px rgba(0, 0, 0, 0.01);
-    border-radius: 1.25rem;
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.6);
+  box-shadow:
+    0 10px 30px -5px rgba(0, 0, 0, 0.03),
+    0 8px 10px -6px rgba(0, 0, 0, 0.01);
+  border-radius: 1.25rem;
 }
 
 /* Spray Animation Canvas */
 #sprayCanvas {
-    box-shadow: inset 0 0 15px rgba(0,0,0,0.05);
+  box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.05);
 }
 
 /* D-Pad Button 3D Effect for Light Theme */
 .dpad-btn {
-    box-shadow: 0 4px 0 #cbd5e1;
-    transition: all 0.15s ease;
+  box-shadow: 0 4px 0 #cbd5e1;
+  transition: all 0.15s ease;
 }
 .dpad-btn:active {
-    box-shadow: none;
-    transform: translateY(4px);
+  box-shadow: none;
+  transform: translateY(4px);
 }
