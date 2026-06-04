@@ -500,8 +500,8 @@ DOM.spray.btnStart.addEventListener("click", async () => {
   const lebar = parseFloat(document.getElementById("tileHeight").value) || 400;
   const speed =
     parseInt(document.getElementById("jogSpeedInput").value) || 1200;
-  const stepOver =
-    parseFloat(document.getElementById("sprayRadius").value) || 40;
+  const diameterSpray =
+    parseFloat(document.getElementById("sprayRadius").value) || 10;
 
   logMsg("=== SENDING JOB TO MACHINE ===");
   logMsg(`Dimensi Genteng: ${panjang}x${lebar}mm @ F${speed}`);
@@ -510,7 +510,7 @@ DOM.spray.btnStart.addEventListener("click", async () => {
     {
       panjang: panjang,
       lebar: lebar,
-      step_over: stepOver,
+      diameter: diameterSpray,
       feed_rate: speed,
     },
     "start-spraying",

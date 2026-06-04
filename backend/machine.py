@@ -1,5 +1,6 @@
 from math import isnan
 import asyncio
+import math
 from pydantic import BaseModel
 from . import connection as con
 
@@ -34,7 +35,7 @@ class ConnectRequest(BaseModel):
 class SprayingRequest(BaseModel):
     panjang: float
     lebar: float
-    step_over: float
+    diameter: float
     feed_rate: float
 
 
@@ -110,7 +111,7 @@ def resume_process():
 
 # =================== SPRAYING ALGORITHM ===================
 
-def spraying_gcode(panjang: float, lebar: float, step_over: float, feed_rate: float):
+def spraying_gcode(panjang: float, lebar: float, diameter: float, feed_rate: float):
     # panjang = panjang - 1
     # lebar = lebar - 1
     gcode_list = []
@@ -124,6 +125,9 @@ def spraying_gcode(panjang: float, lebar: float, step_over: float, feed_rate: fl
     # Titik koordinat awal nosel
     last_x, last_y = 0.0, 0.0
 
+    line = math.ceil(lebar / diameter) if diameter > 0 else 1
+    step_over = math.floor(lebar / line) if line > 0 else diameter
+
     gcode_list.append("M3")
 
     while current_y <= lebar:
@@ -134,7 +138,7 @@ def spraying_gcode(panjang: float, lebar: float, step_over: float, feed_rate: fl
         # Hitung jarak sapuan horizontal
         total_distance += abs(target_x - last_x)
         last_x = target_x
-
+        
         # 2. Geser sumbu Y ke baris berikutnya
         current_y += step_over
 
@@ -169,7 +173,7 @@ async def run_spraying_algorithm(data: SprayingRequest):
         return
 
     # Ambil list perintah dan total jarak absolut program semprot
-    gcode_commands, total_distance = spraying_gcode(data.panjang, data.lebar, data.step_over, data.feed_rate)
+    gcode_commands, total_distance = spraying_gcode(data.panjang, data.lebar, data.diameter, data.feed_rate)
     
     currentStatus["isSpraying"] = True
     currentStatus["isPaused"] = False
