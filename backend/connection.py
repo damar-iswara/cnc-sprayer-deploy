@@ -174,3 +174,27 @@ def get_grbl_status():
     except Exception as e:
         print(f"Gagal mengambil query status GRBL: {e}")
         return None
+    
+def get_grbl_status_full():
+    global serial_port
+    if not is_connected():
+        return None
+    try:
+        serial_port.write(b"?")
+        time.sleep(0.02)
+        res = serial_port.readline().decode(errors="ignore").strip()
+
+        if res.startswith("<") and "|" in res:
+            parts = res.replace("<", "").replace(">", "").split("|")
+            state = parts[0]  # "Idle", "Run", "Hold", dll
+            for part in parts:
+                if part.startswith("MPos:"):
+                    coords = part.split(":")[1].split(",")
+                    return {
+                        "state": state,
+                        "pos": [float(coords[0]), float(coords[1]), float(coords[2])]
+                    }
+        return None
+    except Exception as e:
+        print(f"Gagal mengambil query status GRBL: {e}")
+        return None

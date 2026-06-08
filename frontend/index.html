@@ -275,10 +275,7 @@
                       >Diameter:</span
                     >
                     <div class="flex items-center space-x-2 pl-1">
-                      <input
-                        type="number"
-                        id="sprayRadius"
-                        value="40"
+                      <input type="number" id="sprayRadius" value="40"
                         class="w-20 bg-white border border-border-color text-text-main text-sm font-semibold rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary block p-2 outline-none transition-all text-center shadow-sm"
                       />
                       <span class="text-xs font-bold text-text-muted">mm</span>
@@ -366,23 +363,15 @@
                 <i data-lucide="info" class="w-5 h-5 text-accent"></i>
                 <span>System Status</span>
               </h2>
-              <div
-                class="bg-[#f9fafb] border border-border-color rounded-[8px] p-[12px] font-mono text-[0.9rem] leading-[1.5] overflow-y-auto h-[150px] shadow-inner text-text-main space-y-2"
-              >
-                <div>Percentage: <span id="manListPercent">0%</span></div>
-                <div>
-                  Coordinate: X=<span id="manListX">0.00</span>, Y=<span
-                    id="manListY"
-                    >0.00</span
-                  >, Z=<span id="manListZ">50.00</span>
-                </div>
-                <div>Start Point: <span id="manListStartPt">False</span></div>
-                <div>Constraints: <span id="manListConstraint">ON</span></div>
-                <div>Speed: <span id="manListSpeed">1200.0</span></div>
-                <div>Sprayer Status: <span id="manSprayerStatus">False</span></div>
-                <div>
-                  Sprayer Timer: <span id="manListTimer">00:00:00</span>
-                </div>
+              <div class="bg-[#f9fafb] border border-border-color rounded-[8px] p-[12px] font-mono text-[0.9rem] leading-[1.5] overflow-y-auto h-[150px] shadow-inner text-text-main space-y-2">
+                <!-- Spray Page - System Status -->
+                <div>Percentage: <span id="sprayListPercent">0%</span></div>
+                <div>Coordinate: X=<span id="sprayListX">0.00</span>, Y=<span id="sprayListY">0.00</span>, Z=<span id="sprayListZ">0.00</span></div>
+                <div>Start Point: <span id="sprayListStartPt">False</span></div>
+                <div>Constraints: <span id="sprayListConstraint">ON</span></div>
+                <div>Speed: <span id="sprayListSpeed">1000.0</span></div>
+                <div>Sprayer Status: <span id="spraySprayerStatus">False</span></div>
+                <div>Sprayer Timer: <span id="sprayListTimer">00:00:00</span></div>
               </div>
             </div>
 
@@ -607,18 +596,19 @@
               <div
                 class="bg-[#f9fafb] border border-border-color rounded-[8px] p-[12px] font-mono text-[0.9rem] leading-[1.5] overflow-y-auto h-[150px] shadow-inner text-text-main space-y-2"
               >
-                <div>Percentage: <span id="manListPercent2">0%</span></div>
+                <div>Percentage: <span id="manListPercent">0%</span></div>
                 <div>
-                  Coordinate: X=<span id="manListX2">0.00</span>, Y=<span
-                    id="manListY2"
+                  Coordinate: X=<span id="manListX">0.00</span>, Y=<span
+                    id="manListY"
                     >0.00</span
-                  >, Z=<span id="manListZ2">50.00</span>
+                  >, Z=<span id="manListZ">0.00</span>
                 </div>
-                <div>Start Point: <span id="manListStartPt2">False</span></div>
-                <div>Constraints: <span id="manListConstraint2">ON</span></div>
-                <div>Speed: <span id="manListSpeed2">1200.0</span></div>
+                <div>Start Point: <span id="manListStartPt">False</span></div>
+                <div>Constraints: <span id="manListConstraint">ON</span></div>
+                <div>Speed: <span id="manListSpeed">1000.0</span></div>
+                <div>Sprayer Status: <span id="manSprayerStatus">False</span></div>
                 <div>
-                  Sprayer Timer: <span id="manListTimer2">00:00:00</span>
+                  Sprayer Timer: <span id="manListTimer">00:00:00</span>
                 </div>
               </div>
             </div>

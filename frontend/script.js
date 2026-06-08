@@ -24,6 +24,7 @@ const tileSize = {
 // 'disconnected' | 'connecting' | 'connected' | 'disconnecting'
 let connectionState = "disconnected";
 
+
 // ---------------------------------- DOM Elements ----------------------------------
 
 const DOM = {
@@ -54,17 +55,17 @@ const DOM = {
   },
 
   status: {
-    percent: document.getElementById("manListPercent"),
+    percent:  [document.getElementById("sprayListPercent"),  document.getElementById("manListPercent")],
     coords: [
-      document.getElementById("manListX"),
-      document.getElementById("manListY"),
-      document.getElementById("manListZ"),
+      [document.getElementById("sprayListX"),  document.getElementById("manListX")],
+      [document.getElementById("sprayListY"),  document.getElementById("manListY")],
+      [document.getElementById("sprayListZ"),  document.getElementById("manListZ")],
     ],
-    startPt: document.getElementById("manListStartPt"),
-    constraint: document.getElementById("manListConstraint"),
-    speed: document.getElementById("manListSpeed"),
-    timer: document.getElementById("manListTimer"),
-    sprayerStatus: document.getElementById("manSprayerStatus"),
+    startPt:      [document.getElementById("sprayListStartPt"),    document.getElementById("manListStartPt")],
+    constraint:   [document.getElementById("sprayListConstraint"), document.getElementById("manListConstraint")],
+    speed:        [document.getElementById("sprayListSpeed"),       document.getElementById("manListSpeed")],
+    timer:        [document.getElementById("sprayListTimer"),       document.getElementById("manListTimer")],
+    sprayerStatus:[document.getElementById("spraySprayerStatus"),  document.getElementById("manSprayerStatus")],
   },
 
   manualConsole: document.getElementById("manualConsole"),
@@ -106,6 +107,7 @@ async function sendData(data, type) {
     return null;
   }
 }
+
 
 // ---------------------------------- WebSocket ----------------------------------
 
@@ -211,6 +213,7 @@ async function fetchAvailablePorts() {
   }
 }
 
+
 // ---------------------------------- Connection Logic ----------------------------------
 
 function updateConnectionUI() {
@@ -288,6 +291,7 @@ DOM.spray.btnDisconnect.addEventListener("click", async () => {
   updateConnectionUI();
 });
 
+
 // ---------------------------------- Clock & Timer ----------------------------------
 
 setInterval(() => {
@@ -298,14 +302,18 @@ setInterval(() => {
 
 setInterval(() => {
   if (!currentStatus.isSpraying || currentStatus.isPaused) return;
+
   currentStatus.seconds++;
+
   const [h, m, s] = [
     Math.floor(currentStatus.seconds / 3600),
     Math.floor((currentStatus.seconds % 3600) / 60),
     currentStatus.seconds % 60,
   ].map((n) => String(n).padStart(2, "0"));
-  DOM.status.timer.innerText = `${h}:${m}:${s}`;
+  
+  DOM.status.timer.forEach(el => el && (el.innerText = `${h}:${m}:${s}`));
 }, 1000);
+
 
 // ---------------------------------- Navigation ----------------------------------
 
@@ -335,19 +343,22 @@ function switchTab(tabId) {
   if (tabId === "spray-page") resizeCanvas();
 }
 
+
 // ---------------------------------- Status Update ----------------------------------
 
 function updateStatusUI() {
   const [x, y, z] = currentStatus.position;
-  DOM.status.coords[0].innerText = Number(x).toFixed(2);
-  DOM.status.coords[1].innerText = Number(y).toFixed(2);
-  DOM.status.coords[2].innerText = Number(z).toFixed(2);
-  DOM.status.percent.innerText = Math.round(currentStatus.progress) + "%";
-  DOM.status.startPt.innerText = currentStatus.startPoint ? "true" : "false";
-  DOM.status.constraint.innerText = currentStatus.constraints ? "ON" : "OFF";
-  DOM.status.speed.innerText = Number(currentStatus.feed).toFixed(1);
-  DOM.status.sprayerStatus.innerText = currentStatus.isSpraying ? "ON" : "OFF";
+
+  DOM.status.coords[0].forEach(el => el && (el.innerText = Number(x).toFixed(2)));
+  DOM.status.coords[1].forEach(el => el && (el.innerText = Number(y).toFixed(2)));
+  DOM.status.coords[2].forEach(el => el && (el.innerText = Number(z).toFixed(2)));
+  DOM.status.percent.forEach(el      => el && (el.innerText = Math.round(currentStatus.progress) + "%"));
+  DOM.status.startPt.forEach(el      => el && (el.innerText = currentStatus.startPoint ? "true" : "false"));
+  DOM.status.constraint.forEach(el   => el && (el.innerText = currentStatus.constraints ? "ON" : "OFF"));
+  DOM.status.speed.forEach(el        => el && (el.innerText = Number(currentStatus.feed).toFixed(1)));
+  DOM.status.sprayerStatus.forEach(el=> el && (el.innerText = currentStatus.isSpraying ? "ON" : "OFF"));
 }
+
 
 // ---------------------------------- Console Logging ----------------------------------
 
@@ -381,19 +392,32 @@ async function jog(dir) {
   }
 
   const step = parseFloat(document.getElementById("jogStepInput").value) || 1;
-  const speed =
-    parseInt(document.getElementById("jogSpeedInput").value) || 1000;
+  const speed = parseInt(document.getElementById("jogSpeedInput").value) || 1000;
 
-  const result = await sendData({ direction: dir, step, feed: speed }, "jog");
+  const result = await sendData(
+    { 
+      direction: dir, 
+      step, 
+      feed: speed 
+    }, 
+    "jog"
+  );
+  
   if (result) updateStatus(result);
 }
 
 async function setStartingPoint() {
   if (connectionState !== "connected") return;
+
   const result = await sendData(
-    { zx: 0.0, zy: 0.0, zz: 0.0 },
+    { 
+      zx: 0.0, 
+      zy: 0.0, 
+      zz: 0.0 
+    },
     "set-starting-point",
   );
+
   if (result) {
     updateStatus(result);
     logMsg("G92 X0 Y0 Z0 — Starting point set ✅");
@@ -402,12 +426,17 @@ async function setStartingPoint() {
 
 async function goHome() {
   if (connectionState !== "connected") return;
-  const speed =
-    parseInt(document.getElementById("jogSpeedInput")?.value) || 1000;
+
+  const speed = parseInt(document.getElementById("jogSpeedInput")?.value) || 1000;
   const result = await sendData(
-    { to_x: 0.0, to_y: 0.0, to_z: 0.0, feed: speed },
+    { to_x: 0.0, 
+      to_y: 0.0, 
+      to_z: 0.0, 
+      feed: speed 
+    },
     "back-to-start",
   );
+
   if (result) {
     updateStatus(result);
     logMsg("G0 X0 Y0 — Returning to start point");
@@ -477,6 +506,7 @@ function renderLoop(time) {
   requestAnimationFrame(renderLoop);
 }
 
+
 // ---------------------------------- Spray Sequence ----------------------------------
 
 DOM.spray.btnStart.addEventListener("click", async () => {
@@ -496,12 +526,10 @@ DOM.spray.btnStart.addEventListener("click", async () => {
     return;
   }
 
-  const panjang = parseFloat(document.getElementById("tileWidth").value) || 300;
-  const lebar = parseFloat(document.getElementById("tileHeight").value) || 400;
-  const speed =
-    parseInt(document.getElementById("jogSpeedInput").value) || 1200;
-  const diameterSpray =
-    parseFloat(document.getElementById("sprayRadius").value) || 10;
+  const panjang       = parseFloat(document.getElementById("tileWidth").value)   || 100;
+  const lebar         = parseFloat(document.getElementById("tileHeight").value)  || 100;
+  const speed         = parseInt(document.getElementById("jogSpeedInput").value) || 1000;
+  const diameterSpray = parseFloat(document.getElementById("sprayRadius").value) || 17;
 
   logMsg("=== SENDING JOB TO MACHINE ===");
   logMsg(`Dimensi Genteng: ${panjang}x${lebar}mm @ F${speed}`);
@@ -553,6 +581,7 @@ async function triggerEstop() {
 
 DOM.btnEstopSidebar.addEventListener("click", triggerEstop);
 DOM.spray.btnEstop.addEventListener("click", triggerEstop);
+
 
 // ---------------------------------- Boot ----------------------------------
 

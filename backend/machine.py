@@ -109,149 +109,236 @@ def resume_process():
         currentStatus["lastMessage"] = "Proses dilanjutkan dari koordinat x{:.2f} y{:.2f} z{:.2f}".format(*currentStatus["pausedAtPos"])
         return {"success": True, "message": msg, "status": currentStatus}
 
+
 # =================== SPRAYING ALGORITHM ===================
 
 def spraying_gcode(panjang: float, lebar: float, diameter: float, feed_rate: float):
-    # panjang = panjang - 1
-    # lebar = lebar - 1
-    gcode_list = []
-    gcode_list.append("G90")
-    gcode_list.append(f"G1 X0 Y0 F{feed_rate}")
+
+    gcode = [
+        "G90",
+        f"G1 X0 Y0 F{feed_rate}",
+        "M3"
+    ]
+
+    line_count = max(1, math.ceil(lebar / diameter))
+
+    remaining_coverage = lebar - diameter
+    step_over = math.floor(remaining_coverage / (line_count - 1))
+
+    # step_over = lebar
 
     current_y = 0.0
     direction = 1
-    total_distance = 0.0  # <--- Variabel penyimpan total panjang jalur mekanis
-    
-    # Titik koordinat awal nosel
-    last_x, last_y = 0.0, 0.0
 
-    line = math.ceil(lebar / diameter) if diameter > 0 else 1
-    step_over = math.floor(lebar / line) if line > 0 else diameter
+    total_distance = 0.0
+    current_x = 0.0
 
-    gcode_list.append("M3")
-
-    while current_y <= lebar:
-        # 1. Tentukan target sapuan X
-        target_x = panjang if direction == 1 else 0.0
-        gcode_list.append(f"G1 X{target_x} Y{current_y} F{feed_rate}")
+    for line in range(line_count):
         
-        # Hitung jarak sapuan horizontal
-        total_distance += abs(target_x - last_x)
-        last_x = target_x
-        
-        # 2. Geser sumbu Y ke baris berikutnya
-        current_y += step_over
+        # Gerakan vertikal dikurangi radius agar area spray tidak lebih dari tujuan
+        target_x = (panjang - diameter) if direction > 0 else 0.0
 
-        # 3. Jalankan manuver belok sudut jika posisi masih di dalam area genteng
-        if current_y <= lebar:
-            gcode_list.append(f"G1 X{last_x} Y{current_y} F{feed_rate}")
-            
-            # Hitung jarak geser vertikal belokan
-            total_distance += abs(current_y - last_y)
-            last_y = current_y
+        gcode.append(
+            f"G1 X{target_x} Y{current_y} F{feed_rate}"
+        )
 
+        total_distance += abs(target_x - current_x)
+        current_x = target_x
+
+        next_y = current_y + step_over
+
+        # Gerakan horizontal dikurangi radius agar area spray tidak lebih dari tujuan
+        if next_y <= (lebar - math.floor(diameter / 2)):
+            gcode.append(
+                f"G1 X{current_x} Y{next_y} F{feed_rate}"
+            )
+
+            total_distance += abs(next_y - current_y)
+
+        current_y = next_y
         direction *= -1
 
-    gcode_list.append("M5")
-    gcode_list.append(f"G1 X0 Y0 F{feed_rate}")
+    gcode.extend([
+        "M5",
+        f"G1 X0 Y0 F{feed_rate}"
+    ])
 
-    # con.reset_buffer()  # Pastikan buffer bersih sebelum mulai eksekusi
+    return gcode, total_distance
 
-    return gcode_list, total_distance  # <--- Kembalikan list dan nilai total jaraknya
+def update_progress_from_position(real_pos, tracker, total_distance):
+    dx = abs(real_pos[0] - tracker["x"])
+    dy = abs(real_pos[1] - tracker["y"])
+
+    tracker["distance"] += dx + dy
+
+    tracker["x"] = real_pos[0]
+    tracker["y"] = real_pos[1]
+
+    if total_distance <= 0:
+        return 0.0
+
+    return min(
+        100.0,
+        round(
+            (tracker["distance"] / total_distance) * 100,
+            2
+        )
+    )
+
+async def wait_if_paused():
+    while currentStatus["isPaused"]:
+        if _stop_spraying_flag:
+            return False
+
+        await asyncio.sleep(0.1)
+
+    return True
 
 async def run_spraying_algorithm(data: SprayingRequest):
     global _stop_spraying_flag
+
     _stop_spraying_flag = False
-    
+
     _sync_connection_status()
+
     if not currentStatus["connected"]:
-        currentStatus["lastMessage"] = "Gagal mulai, mesin tidak terkoneksi."
+        currentStatus["lastMessage"] = (
+            "Gagal mulai, mesin tidak terkoneksi."
+        )
         return
 
-    if data.panjang > constraints["x"] or data.lebar > constraints["y"]:
-        currentStatus["lastMessage"] = "Ukuran genteng melebihi batasan maksimum area mesin!"
+    if (
+        data.panjang > constraints["x"]
+        or data.lebar > constraints["y"]
+    ):
+        currentStatus["lastMessage"] = (
+            "Ukuran genteng melebihi batas area mesin."
+        )
         return
 
-    # Ambil list perintah dan total jarak absolut program semprot
-    gcode_commands, total_distance = spraying_gcode(data.panjang, data.lebar, data.diameter, data.feed_rate)
-    
-    currentStatus["isSpraying"] = True
-    currentStatus["isPaused"] = False
-    currentStatus["progress"] = 0.0
-    
-    distance_travelled = 0.0  # <--- Variabel pelacak jarak yang sudah dilewati
-    last_tracked_x, last_tracked_y = 0.0, 0.0
+    gcode_commands, total_distance = spraying_gcode(
+        data.panjang,
+        data.lebar,
+        data.diameter,
+        data.feed_rate
+    )
+
+    currentStatus.update({
+        "isSpraying": True,
+        "isPaused": False,
+        "progress": 0.0
+    })
+
+    tracker = {
+        "x": 0.0,
+        "y": 0.0,
+        "distance": 0.0
+    }
+
+    last_cmd = ""
+    last_report = ""
 
     for cmd in gcode_commands:
-        if _stop_spraying_flag:
-            break
-        
-        while currentStatus["isPaused"]:
-            if _stop_spraying_flag:
-                break
-            await asyncio.sleep(0.1)
 
         if _stop_spraying_flag:
+            break
+
+        if not await wait_if_paused():
             break
 
         ok, msg = con.send_command(cmd)
+
         if not ok:
-            currentStatus["lastMessage"] = f"Error saat eksekusi: {cmd}. Loop dibatalkan."
+            currentStatus["lastMessage"] = (
+                f"Error saat eksekusi: {cmd}"
+            )
             break
 
-        # Ambil koordinat fisik mesin terbaru dari GRBL (?) status query
+        last_cmd = cmd
+        last_report = msg
+
         real_pos = con.get_grbl_status()
+
         if real_pos:
             currentStatus["position"] = real_pos
-            
-            # Akumulasikan jarak tempuh real berdasarkan pergerakan nosel terakhir
-            dx = abs(real_pos[0] - last_tracked_x)
-            dy = abs(real_pos[1] - last_tracked_y)
-            distance_travelled += (dx + dy)
-            
-            # Update referensi titik pelacakan terakhir
-            last_tracked_x, last_tracked_y = real_pos[0], real_pos[1]
 
-            # RUMUS BARU: Persentase naik smooth merayap sepanjang jalur gerak nosel
-            if total_distance > 0:
-                calc_progress = (distance_travelled / total_distance) * 100
-                currentStatus["progress"] = min(99.9, max(0.0, round(calc_progress, 2)))
+            currentStatus["progress"] = min(
+                99.9,
+                update_progress_from_position(
+                    real_pos,
+                    tracker,
+                    total_distance
+                )
+            )
 
-        currentStatus["lastMessage"] = f"Mengeksekusi perintah mesin: {cmd}"
+        currentStatus["lastMessage"] = (
+            f"Mengeksekusi perintah: {cmd}"
+        )
+
         currentStatus["lastReport"] = msg
-        
+
         await asyncio.sleep(0.1)
 
-    # Loop monitoring akhir untuk memastikan nosel benar-benar sampai (0,0) sebelum ditutup
-    while currentStatus["progress"] < 100.0 and not _stop_spraying_flag:
-        real_pos = con.get_grbl_status()
-        if real_pos:
-            currentStatus["position"] = real_pos
-            dx = abs(real_pos[0] - last_tracked_x)
-            dy = abs(real_pos[1] - last_tracked_y)
-            distance_travelled += (dx + dy)
-            last_tracked_x, last_tracked_y = real_pos[0], real_pos[1]
-            
-            if total_distance > 0:
-                calc_progress = (distance_travelled / total_distance) * 100
-                # [PERBAIKAN]: Jika sudah lewat atau sama dengan total jalur semprot, langsung set 100%
-                if calc_progress >= 100.0:
-                    currentStatus["progress"] = 100.0
-                    currentStatus["isSpraying"] = False # Status spraying selesai secara fungsional
-                else:
-                    currentStatus["progress"] = round(calc_progress, 2)
-
-        currentStatus["lastMessage"] = f"Mengeksekusi perintah mesin: {cmd}"
-        currentStatus["lastReport"] = msg
-        await asyncio.sleep(0.2)
+    await monitor_completion(
+        tracker,
+        total_distance,
+        last_cmd,
+        last_report
+    )
 
     if not _stop_spraying_flag:
         currentStatus["progress"] = 100.0
-        currentStatus["lastMessage"] = "Proses spraying genteng SELESAI dengan sukses!"
-    
+        currentStatus["lastMessage"] = (
+            "Proses spraying selesai."
+        )
+
     currentStatus["isSpraying"] = False
     currentStatus["isPaused"] = False
-    con.reset_buffer()  # Pastikan buffer bersih setelah eksekusi
+
+    for _ in range(50):  # max 10 detik
+        status = con.get_grbl_status_full()
+        print(f"[HOME POLL] {status}")
+        if (
+            status
+            and status["state"] == "Idle"
+            and status["pos"][0] == 0.0
+            and status["pos"][1] == 0.0
+            and status["pos"][2] == 0.0
+        ):
+            currentStatus["position"] = status["pos"]
+            break
+        await asyncio.sleep(0.2)
+
+    con.reset_buffer()
+
+async def monitor_completion(tracker, total_distance, last_cmd, last_report):
+    while (
+        currentStatus["progress"] < 100.0
+        and not _stop_spraying_flag
+    ):
+        real_pos = con.get_grbl_status()
+
+        if real_pos:
+            currentStatus["position"] = real_pos
+
+            currentStatus["progress"] = (
+                update_progress_from_position(
+                    real_pos,
+                    tracker,
+                    total_distance
+                )
+            )
+
+        currentStatus["lastMessage"] = (
+            f"Mengeksekusi perintah: {last_cmd}"
+        )
+
+        currentStatus["lastReport"] = last_report
+
+        await asyncio.sleep(0.2)
+
+
+# =================== CONTROL ALGORITHM ===================
 
 def jog_machine(direction: str, step: float, feed: float):
     _sync_connection_status()

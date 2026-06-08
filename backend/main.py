@@ -109,7 +109,10 @@ def emergencyStop():
 @app.post("/start-spraying")
 def startSpraying(data: SprayingRequest, background_tasks: BackgroundTasks):
     print("START SPRAYING REQUEST:", data)
-    background_tasks.add_task(mcn.run_spraying_algorithm, data)
+    background_tasks.add_task(
+        mcn.run_spraying_algorithm,
+        data
+    )
     return {"success": True, "message": "Algoritma spraying berhasil dijalankan di background."}
 
 @app.post("/pause-spraying")
