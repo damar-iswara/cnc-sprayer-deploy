@@ -1,3 +1,4 @@
+import time
 import asyncio
 import serial.tools.list_ports
 
@@ -35,11 +36,9 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while True:
             await ws.send_json(mcn.get_status())
-            # await ws.send_json(mcn.get_constraints())
             await asyncio.sleep(0.2)
     except WebSocketDisconnect:
         print("Client disconnected from WebSocket")
-
 
 @app.get("/status")
 def status():
@@ -63,6 +62,33 @@ def connect_machine(data: ConnectRequest):
 @app.post("/disconnect")
 def disconnect_machine():
     ok, msg = con.disconnect()
+
+    status = mcn.get_status()
+
+    status["connected"] = con.is_connected()
+    status["lastMessage"] = msg
+    
+    return {
+        "success": ok,
+        "message": msg,
+        "status": status,
+    }
+
+@app.post("/reconnect")
+def reconnect_machine(data: ConnectRequest):
+    ok, msg = con.connect(data.port, data.baudrate)
+    
+    # Reset buffer like emergency stop
+    mcn.emergency_stop()
+    time.sleep(0.1)
+
+    # Reset status
+    mcn.reset_status()
+    time.sleep(0.1)
+
+    # Connecting like connection button logic
+    mcn.set_starting_point(0, 0, 0)
+
     status = mcn.get_status()
     status["connected"] = con.is_connected()
     status["lastMessage"] = msg

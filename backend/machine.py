@@ -41,7 +41,7 @@ class SprayingRequest(BaseModel):
 
 # =================== DATA MANAGEMENT ===================
 
-currentStatus = {
+DEFAULT_STATUS = {
     "position":    [0.00, 0.00, 50.00],  # [x, y, z]
     "pausedAtPos": [0.0, 0.0, 0.0],
     "isSpraying":  False,
@@ -55,6 +55,8 @@ currentStatus = {
     "lastMessage": "GRBL ready",
     "emergency_stop": False
 }
+
+currentStatus = DEFAULT_STATUS.copy()
 
 sprayState = {
     "isActive": False,
@@ -72,15 +74,35 @@ tileSize = {
 
 constraints = {"x": 440, "y": 500, "z": 80}
 _stop_spraying_flag = False
+_first_connection = False
 
 
-# =================== CONTROL ALGORITHM ===================
+# =================== STATUS  ===================
+def get_status():
+    _ = _sync_connection_status()
+    return currentStatus
+
+def get_constraints():
+    return constraints
+
 def _sync_connection_status():
     currentStatus["connected"] = con.is_connected()
 
+def reset_status():
+    global currentStatus
+
+    # Reset status and spray
+    con.reset_buffer()
+    currentStatus = DEFAULT_STATUS.copy()
+    
+
+# =================== CONTROL ALGORITHM ===================
+
 def stop_process():
     global _stop_spraying_flag
+
     _stop_spraying_flag = True
+
     ok, msg = con.emergency_stop()
     currentStatus["isSpraying"] = False
     currentStatus["lastMessage"] = "Proses dihentikan paksa"
@@ -466,6 +488,7 @@ def to_starting_point(to_x:float, to_y:float, to_z:float, feed:float):
 
 def emergency_stop():
     ok, msg = con.emergency_stop()
+    con.reset_buffer()
 
     # Update current position and speed
     currentStatus["isSpraying"] =  False
@@ -478,11 +501,3 @@ def emergency_stop():
     print("UPDATED:", currentStatus)
     
     return currentStatus
-
-# =================== STATUS  ===================
-def get_status():
-    _sync_connection_status()
-    return currentStatus
-
-def get_constraints():
-    return constraints

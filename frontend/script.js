@@ -16,6 +16,21 @@ let currentStatus = {
   lastMessage: "GRBL ready",
 };
 
+let DEFAULT_STATUS = {
+  position: [0.0, 0.0, 0.0], // [x, y, z]
+  pausedAtPos: [0.0, 0.0, 0.0],
+  isSpraying: false,
+  isPaused: false,
+  connected: false,
+  startPoint: false,
+  constraints: false,
+  feed: 1000,
+  progress: 0,
+  seconds: 0,
+  lastReport: "-",
+  lastMessage: "GRBL ready",
+};
+
 const tileSize = {
   w: 300,
   h: 400,
@@ -23,6 +38,98 @@ const tileSize = {
 
 // 'disconnected' | 'connecting' | 'connected' | 'disconnecting'
 let connectionState = "disconnected";
+let prevPort = false;
+
+// for autoreconnect
+let _last_port = ""
+let _last_baudrate = ""
+let _auto_reconnect_enabled = false;
+
+
+// ---------------------------------- WebSocket ----------------------------------
+
+let ws = null;
+
+function connectWebSocket() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+  logMsg("Menghubungkan ke server...");
+
+  ws.onopen = () => {
+    logMsg("Terhubung ke server ✅");
+    fetchAvailablePorts();
+  };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    console.log("WS DATA:", data);
+
+    // Update status, port, connection, and UI (0.2s)
+    updateStatus(data);
+    fetchAvailablePorts();
+    
+    // Sinc canvas animation and CNC machine 
+    if (typeof data.isSpraying === "boolean")
+      currentStatus.isSpraying = data.isSpraying;
+    if (typeof data.isPaused === "boolean")
+      currentStatus.isPaused = data.isPaused;
+    if (typeof data.progress === "number") {
+      currentStatus.progress = data.progress;
+      updateProgressUI();
+    }
+
+    // Dynamic button control with the state machine
+    if (currentStatus.isSpraying) {
+      DOM.spray.btnStart.disabled = true;
+      DOM.spray.btnStart.classList.add("opacity-50");
+      DOM.spray.btnPause.classList.remove("hidden");
+
+      if (currentStatus.isPaused) {
+        DOM.spray.btnPause.innerHTML =
+          '<i data-lucide="play" class="w-4 h-4"></i><span>RESUME</span>';
+        DOM.spray.btnPause.className =
+          "px-6 py-2.5 bg-success hover:bg-green-500 text-white shadow-md shadow-success/30 rounded-xl transition-all font-bold text-sm flex items-center justify-center space-x-2";
+      } else {
+        DOM.spray.btnPause.innerHTML =
+          '<i data-lucide="pause" class="w-4 h-4"></i><span>PAUSE</span>';
+        DOM.spray.btnPause.className =
+          "px-6 py-2.5 bg-warning hover:bg-yellow-500 text-white shadow-md shadow-warning/30 rounded-xl transition-all font-bold text-sm flex items-center justify-center space-x-2";
+      }
+      lucide.createIcons();
+    } else {
+      DOM.spray.btnStart.disabled = false;
+      DOM.spray.btnStart.classList.remove("opacity-50");
+      DOM.spray.btnPause.classList.add("hidden");
+    }
+
+    // Sinc connection status
+    if (typeof data.connected === "boolean") {
+      const actualState = data.connected
+        ? "connected"
+        : "disconnected";
+
+      if (
+        connectionState !== "connecting" &&
+        connectionState !== "disconnecting" &&
+        connectionState !== actualState
+      ) {
+        connectionState = actualState;
+        updateConnectionUI();
+      }
+    }
+  };
+
+  ws.onclose = () => {
+    logMsg("Koneksi ke server terputus ❌", true);
+    setTimeout(connectWebSocket, 3000);
+  };
+
+  ws.onerror = (err) => {
+    logMsg("WebSocket error", true);
+    console.error("WS Error:", err);
+  };
+}
 
 
 // ---------------------------------- DOM Elements ----------------------------------
@@ -55,12 +162,13 @@ const DOM = {
   },
 
   status: {
-    percent:  [document.getElementById("sprayListPercent"),  document.getElementById("manListPercent")],
     coords: [
       [document.getElementById("sprayListX"),  document.getElementById("manListX")],
       [document.getElementById("sprayListY"),  document.getElementById("manListY")],
       [document.getElementById("sprayListZ"),  document.getElementById("manListZ")],
     ],
+    percent:  [document.getElementById("sprayListPercent"),  document.getElementById("manListPercent")],
+    connect:  [document.getElementById("sprayListConnection"),  document.getElementById("manListConnection")],
     startPt:      [document.getElementById("sprayListStartPt"),    document.getElementById("manListStartPt")],
     constraint:   [document.getElementById("sprayListConstraint"), document.getElementById("manListConstraint")],
     speed:        [document.getElementById("sprayListSpeed"),       document.getElementById("manListSpeed")],
@@ -74,6 +182,49 @@ const DOM = {
 
 const ctx = DOM.canvas.el.getContext("2d");
 
+// ---------------------------------- Status Update ----------------------------------
+
+function updateSprayButtonsUI() {
+  if (currentStatus.isSpraying) {
+    DOM.spray.btnStart.disabled = true;
+    DOM.spray.btnStart.classList.add("opacity-50");
+    DOM.spray.btnPause.classList.remove("hidden");
+
+    if (currentStatus.isPaused) {
+      DOM.spray.btnPause.innerHTML =
+        '<i data-lucide="play" class="w-4 h-4"></i><span>RESUME</span>';
+      DOM.spray.btnPause.className =
+        "px-6 py-2.5 bg-success hover:bg-green-500 text-white shadow-md shadow-success/30 rounded-xl transition-all font-bold text-sm flex items-center justify-center space-x-2";
+    } else {
+      DOM.spray.btnPause.innerHTML =
+        '<i data-lucide="pause" class="w-4 h-4"></i><span>PAUSE</span>';
+      DOM.spray.btnPause.className =
+        "px-6 py-2.5 bg-warning hover:bg-yellow-500 text-white shadow-md shadow-warning/30 rounded-xl transition-all font-bold text-sm flex items-center justify-center space-x-2";
+    }
+    lucide.createIcons();
+  } else {
+    DOM.spray.btnStart.disabled = false;
+    DOM.spray.btnStart.classList.remove("opacity-50");
+    DOM.spray.btnPause.classList.add("hidden");
+  }
+}
+
+function updateStatusUI() {
+  const [x, y, z] = currentStatus.position;
+
+  DOM.status.coords[0].forEach    (el => el && (el.innerText = Number(x).toFixed(2)));
+  DOM.status.coords[1].forEach    (el => el && (el.innerText = Number(y).toFixed(2)));
+  DOM.status.coords[2].forEach    (el => el && (el.innerText = Number(z).toFixed(2)));
+  DOM.status.connect.forEach      (el => el && (el.innerText = currentStatus.connected ? "ON" : "OFF"));
+  DOM.status.percent.forEach      (el => el && (el.innerText = Math.round(currentStatus.progress) + "%"));
+  DOM.status.startPt.forEach      (el => el && (el.innerText = currentStatus.startPoint ? "true" : "false"));
+  DOM.status.constraint.forEach   (el => el && (el.innerText = currentStatus.constraints ? "ON" : "OFF"));
+  DOM.status.speed.forEach        (el => el && (el.innerText = Number(currentStatus.feed).toFixed(1)));
+  DOM.status.sprayerStatus.forEach(el => el && (el.innerText = currentStatus.isSpraying ? "ON" : "OFF"));
+
+  updateSprayButtonsUI(); // <- panggil di sini, biar selalu sinkron
+}
+
 // ---------------------------------- Data Management ----------------------------------
 
 function updateStatus(newData) {
@@ -84,6 +235,7 @@ function updateStatus(newData) {
   currentStatus = { ...currentStatus, ...newData };
   updateStatusUI();
 }
+
 
 // ---------------------------------- Send Data ----------------------------------
 
@@ -109,112 +261,108 @@ async function sendData(data, type) {
 }
 
 
-// ---------------------------------- WebSocket ----------------------------------
-
-let ws = null;
-
-function connectWebSocket() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-
-  logMsg("Menghubungkan ke server...");
-
-  ws.onopen = () => {
-    logMsg("Terhubung ke server ✅");
-    fetchAvailablePorts();
-  };
-
-  ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    console.log("WS DATA:", data);
-
-    updateStatus(data);
-
-    // SINKRONISASI LIVE ANIMASI CANVAS DARI MESIN FISIK
-    if (typeof data.isSpraying === "boolean")
-      currentStatus.isSpraying = data.isSpraying;
-    if (typeof data.isPaused === "boolean")
-      currentStatus.isPaused = data.isPaused;
-    if (typeof data.progress === "number") {
-      currentStatus.progress = data.progress;
-      updateProgressUI();
-    }
-
-    // KONTROL TOMBOL SECARA DINAMIS BERDASARKAN STATE MESIN
-    if (currentStatus.isSpraying) {
-      DOM.spray.btnStart.disabled = true;
-      DOM.spray.btnStart.classList.add("opacity-50");
-      DOM.spray.btnPause.classList.remove("hidden");
-
-      if (currentStatus.isPaused) {
-        DOM.spray.btnPause.innerHTML =
-          '<i data-lucide="play" class="w-4 h-4"></i><span>RESUME</span>';
-        DOM.spray.btnPause.className =
-          "px-6 py-2.5 bg-success hover:bg-green-500 text-white shadow-md shadow-success/30 rounded-xl transition-all font-bold text-sm flex items-center justify-center space-x-2";
-      } else {
-        DOM.spray.btnPause.innerHTML =
-          '<i data-lucide="pause" class="w-4 h-4"></i><span>PAUSE</span>';
-        DOM.spray.btnPause.className =
-          "px-6 py-2.5 bg-warning hover:bg-yellow-500 text-white shadow-md shadow-warning/30 rounded-xl transition-all font-bold text-sm flex items-center justify-center space-x-2";
-      }
-      lucide.createIcons();
-    } else {
-      DOM.spray.btnStart.disabled = false;
-      DOM.spray.btnStart.classList.remove("opacity-50");
-      DOM.spray.btnPause.classList.add("hidden");
-    }
-
-    // Sinkronisasi status koneksi serial port
-    if (typeof data.connected === "boolean") {
-      const newState = data.connected ? "connected" : "disconnected";
-      if (connectionState !== newState) {
-        connectionState = newState;
-        updateConnectionUI();
-      }
-    }
-  };
-
-  ws.onclose = () => {
-    logMsg("Koneksi ke server terputus ❌", true);
-    setTimeout(connectWebSocket, 3000);
-  };
-
-  ws.onerror = (err) => {
-    logMsg("WebSocket error", true);
-    console.error("WS Error:", err);
-  };
-}
-
-// ---------------------------------- Port Management ----------------------------------
+// ---------------------------------- Port & Connection Management ----------------------------------
 
 async function fetchAvailablePorts() {
   try {
     const res = await fetch("/ports");
     const ports = await res.json();
-    DOM.spray.portSelect.innerHTML = "";
 
     if (!ports.length) {
-      DOM.spray.portSelect.innerHTML =
-        '<option value="">-- Tidak ada port --</option>';
-      logMsg("Tidak ada port serial yang tersedia.", true);
+      await handlePortDisconnected();
       return;
     }
 
-    ports.forEach((p) => {
-      const opt = document.createElement("option");
-      opt.value = p.device;
-      opt.textContent = `${p.device} (${p.description})`;
-      DOM.spray.portSelect.appendChild(opt);
-    });
-    logMsg(`${ports.length} port ditemukan.`);
+    renderPorts(ports);
+
+    if (!prevPort) {
+      logMsg(`${ports.length} port ditemukan.`);
+    }
+
+    await autoReconnect();
+
+    prevPort = true;
+
   } catch (err) {
     DOM.spray.portSelect.innerHTML =
       '<option value="">-- Gagal load port --</option>';
   }
 }
 
+function renderPorts(ports) {
+  DOM.spray.portSelect.innerHTML = "";
 
-// ---------------------------------- Connection Logic ----------------------------------
+  ports.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.device;
+    opt.textContent = `${p.device} (${p.description})`;
+    DOM.spray.portSelect.appendChild(opt);
+  });
+}
+
+async function handlePortDisconnected() {
+  DOM.spray.portSelect.innerHTML =
+    '<option value="">-- Tidak ada port --</option>';
+
+  if (!prevPort) return;
+
+  logMsg("Tidak ada port serial yang tersedia.", true);
+
+  if (connectionState === "connected") {
+    const result = await sendData({}, "disconnect");
+
+    if (result) {
+      connectionState = "disconnected";
+      updateConnectionUI();
+      resetStatusUI();
+    }
+  }
+
+  prevPort = false;
+}
+
+async function autoReconnect() {
+  if (!_auto_reconnect_enabled) return;
+  if (prevPort) return;
+  if (connectionState !== "disconnected") return;
+
+  const port = DOM.spray.portSelect.value;
+  const baudrate = 115200;
+
+  connectionState = "connecting";
+  updateConnectionUI();
+
+  logMsg(`Menghubungkan kembali ke ${port} @ ${baudrate}bps...`);
+
+  const result = await sendData(
+    { port, baudrate },
+    "reconnect"
+  );
+
+  const stop = await sendData(
+    {}, 
+    "emergency-stop"
+  );
+
+  if (!result) {
+    connectionState = "disconnected";
+    updateConnectionUI();
+    return;
+  }
+
+  connectionState = result.status?.connected
+    ? "connected"
+    : "disconnected";
+
+  logMsg(result.message, !result.success);
+
+  if (result.status) updateStatus(result.status);
+
+  updateConnectionUI();
+}
+
+
+// ---------------------------------- Button Connection Logic ----------------------------------
 
 function updateConnectionUI() {
   const isConn = connectionState === "connected";
@@ -270,9 +418,16 @@ DOM.spray.btnConnect.addEventListener("click", async () => {
   if (result) {
     connectionState = result.status?.connected ? "connected" : "disconnected";
     logMsg(result.message, !result.success);
+
     if (result.status) updateStatus(result.status);
+
+    // Flag for reconnect (enable)
+    _auto_reconnect_enabled = true;
   } else {
     connectionState = "disconnected";
+
+    // Flag for reconnect (disable)
+    _auto_reconnect_enabled = false;
   }
   updateConnectionUI();
 });
@@ -341,22 +496,6 @@ function switchTab(tabId) {
   inactiveNav.classList.remove(...activeClasses);
 
   if (tabId === "spray-page") resizeCanvas();
-}
-
-
-// ---------------------------------- Status Update ----------------------------------
-
-function updateStatusUI() {
-  const [x, y, z] = currentStatus.position;
-
-  DOM.status.coords[0].forEach(el => el && (el.innerText = Number(x).toFixed(2)));
-  DOM.status.coords[1].forEach(el => el && (el.innerText = Number(y).toFixed(2)));
-  DOM.status.coords[2].forEach(el => el && (el.innerText = Number(z).toFixed(2)));
-  DOM.status.percent.forEach(el      => el && (el.innerText = Math.round(currentStatus.progress) + "%"));
-  DOM.status.startPt.forEach(el      => el && (el.innerText = currentStatus.startPoint ? "true" : "false"));
-  DOM.status.constraint.forEach(el   => el && (el.innerText = currentStatus.constraints ? "ON" : "OFF"));
-  DOM.status.speed.forEach(el        => el && (el.innerText = Number(currentStatus.feed).toFixed(1)));
-  DOM.status.sprayerStatus.forEach(el=> el && (el.innerText = currentStatus.isSpraying ? "ON" : "OFF"));
 }
 
 
@@ -509,6 +648,24 @@ function renderLoop(time) {
 
 // ---------------------------------- Spray Sequence ----------------------------------
 
+async function resumeSpraying() {
+  logMsg("Melanjutkan proses semprot mesin...");
+  const result = await sendData({}, "resume-spraying");
+  if (result) {
+    if (result.status) updateStatus(result.status);
+    logMsg(result.message || "Spraying dilanjutkan ✅", !result.success);
+  }
+}
+
+async function pauseSpraying() {
+  logMsg("Meminta jeda proses semprot (Pause)...");
+  const result = await sendData({}, "pause-spraying");
+  if (result) {
+    if (result.status) updateStatus(result.status);
+    logMsg(result.message || "Spraying di-pause ⏸️", !result.success);
+  }
+}
+
 DOM.spray.btnStart.addEventListener("click", async () => {
   if (connectionState !== "connected") {
     alert("Please connect to machine first.");
@@ -519,10 +676,8 @@ DOM.spray.btnStart.addEventListener("click", async () => {
     return;
   }
 
-  // Jika mesin sedang di-pause, jalankan fungsi RESUME ke backend
   if (currentStatus.isSpraying && currentStatus.isPaused) {
-    logMsg("Melanjutkan proses semprot mesin...");
-    await fetch("/resume-spraying", { method: "POST" });
+    await resumeSpraying();
     return;
   }
 
@@ -547,6 +702,7 @@ DOM.spray.btnStart.addEventListener("click", async () => {
   if (result && result.success) {
     currentStatus.seconds = 0;
     DOM.status.timer.innerText = "00:00:00";
+    if (result.status) updateStatus(result.status);
   }
 });
 
@@ -554,10 +710,9 @@ DOM.spray.btnPause.addEventListener("click", async () => {
   if (!currentStatus.isSpraying) return;
 
   if (!currentStatus.isPaused) {
-    logMsg("Meminta jeda proses semprot (Pause)...");
-    await fetch("/pause-spraying", { method: "POST" });
+    await pauseSpraying();
   } else {
-    DOM.spray.btnStart.click();
+    await resumeSpraying();
   }
 });
 

@@ -8,6 +8,7 @@ serial_port = None
 _last_port = PORT
 _last_baudrate = BAUDRATE
 
+
 # =================== CONNECTION HANDLER ===================
 def connect(port_name=PORT, baudrate=BAUDRATE):
     global serial_port, _last_port, _last_baudrate
@@ -46,16 +47,19 @@ def disconnect():
 
 def auto_reconnect():
     global serial_port
+
     if not is_connected():
         print(f"Attempting to reconnect to {_last_port} at {_last_baudrate} baud...")
         ok, _ = connect(_last_port, _last_baudrate)
         return ok
+    
     return True
 
 def is_connected():
     return serial_port is not None and serial_port.is_open
 
-# ------------ COMMAND SENDING -----------------
+
+# =================== COMMAND SENDING ===================
 def send_command(cmd: str):
     global serial_port
 
