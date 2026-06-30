@@ -1,0 +1,4 @@
+fastapi==0.138.2
+pydantic==2.13.4
+pyserial==3.5
+uvicorn[standard]
